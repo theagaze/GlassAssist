@@ -1,0 +1,325 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="GlassAssist"
+            android:textColor="#FFF8FAFC"
+            android:textSize="30sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Substituto de Power / Volume · Xiaomi Mi 9 · KernelSU (root apenas)"
+            android:textColor="#FF93A4B8"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/serviceStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_card"
+            android:padding="14dp"
+            android:text="Serviço: parado"
+            android:textColor="#FFE2E8F0"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnStart"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Iniciar overlay" />
+
+            <Button
+                android:id="@+id/btnStop"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="Parar overlay" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="1 · Privilégio único: Root (KernelSU)"
+            android:textColor="#FF7DD3FC"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <ImageView
+                    android:id="@+id/statusRoot"
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:src="@drawable/ic_warning" />
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:text="Shell su persistente (uid=0)"
+                    android:textColor="#FFE2E8F0"
+                    android:textSize="14sp" />
+
+                <Button
+                    android:id="@+id/btnRoot"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="0dp"
+                    android:text="Verificar" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/autoGrantStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="Na primeira execução, o app concede a si mesmo: overlay, WRITE_SECURE_SETTINGS, notificações, câmera e whitelist de bateria."
+                android:textColor="#FFCBD5E1"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="2 · Gestos da bolinha"
+            android:textColor="#FF7DD3FC"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_card"
+            android:padding="12dp"
+            android:text="1 toque: abre/fecha o painel  ·  Segure 320 ms: apagar a tela  ·  Deslize vertical: volume  ·  Arraste lateral: move e solta ancorado na borda"
+            android:textColor="#FFCBD5E1"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="3 · Personalização"
+            android:textColor="#FF7DD3FC"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <TextView
+                android:id="@+id/lblSize"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Tamanho da bolinha: 64 dp"
+                android:textColor="#FFE2E8F0" />
+            <SeekBar
+                android:id="@+id/seekSize"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="48"
+                android:progress="16" />
+
+            <TextView
+                android:id="@+id/lblAlpha"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Opacidade inativa: 45%"
+                android:textColor="#FFE2E8F0" />
+            <SeekBar
+                android:id="@+id/seekAlpha"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="80"
+                android:progress="25" />
+
+            <TextView
+                android:id="@+id/lblBlur"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Desfoque do painel: 40"
+                android:textColor="#FFE2E8F0" />
+            <SeekBar
+                android:id="@+id/seekBlur"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="40" />
+
+            <TextView
+                android:id="@+id/lblRefraction"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Refração / dispersão: 0.12"
+                android:textColor="#FFE2E8F0" />
+            <SeekBar
+                android:id="@+id/seekRefraction"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="30"
+                android:progress="12" />
+
+            <TextView
+                android:id="@+id/lblSensitivity"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Sensibilidade do volume: 34 px/degrau"
+                android:textColor="#FFE2E8F0" />
+            <SeekBar
+                android:id="@+id/seekSensitivity"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="80"
+                android:progress="18" />
+
+            <TextView
+                android:id="@+id/lblPanelSize"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Largura do painel: 228 dp"
+                android:textColor="#FFE2E8F0" />
+            <SeekBar
+                android:id="@+id/seekPanelSize"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="92"
+                android:progress="40" />
+
+            <TextView
+                android:id="@+id/lblTileSize"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Botões do painel: 56 dp"
+                android:textColor="#FFE2E8F0" />
+            <SeekBar
+                android:id="@+id/seekTileSize"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="28"
+                android:progress="12" />
+
+            <TextView
+                android:id="@+id/lblCorner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Borda arredondada: 34 dp"
+                android:textColor="#FFE2E8F0" />
+            <SeekBar
+                android:id="@+id/seekCorner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="32"
+                android:progress="18" />
+
+            <TextView
+                android:id="@+id/lblEdge"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Brilho da borda: 84%"
+                android:textColor="#FFE2E8F0" />
+            <SeekBar
+                android:id="@+id/seekEdge"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="70"
+                android:progress="54" />
+
+            <TextView
+                android:id="@+id/lblDarkness"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Escurecer fundo do painel: 35%"
+                android:textColor="#FFE2E8F0" />
+            <SeekBar
+                android:id="@+id/seekDarkness"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="80"
+                android:progress="35" />
+
+            <TextView
+                android:id="@+id/lblRepeat"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Repetição ao segurar: 130 ms"
+                android:textColor="#FFE2E8F0" />
+            <SeekBar
+                android:id="@+id/seekRepeat"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="240"
+                android:progress="70" />
+
+            <Button
+                android:id="@+id/btnApply"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="Salvar e aplicar" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:paddingBottom="20dp"
+            android:text="Atenção: o KernelSU não mostra pop-up automático. Ative o toggle de com.glassassist em KernelSU Manager → Superuser; o resto é concedido automaticamente."
+            android:textColor="#FFFBBF24"
+            android:textSize="12sp" />
+    </LinearLayout>
+</ScrollView>

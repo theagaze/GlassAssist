@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GlassAssist</string>
+    <string name="channel_name">GlassAssist — serviço silencioso</string>
+    <string name="channel_description">Mantém o overlay ativo sem notificação visível</string>
+    <string name="notification_title">GlassAssist ativo</string>
+    <string name="notification_text">Toque na bolha para abrir o painel</string>
+</resources>
