@@ -1,7 +1,6 @@
 package com.glassassist.service
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -15,13 +14,13 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Vidro do painel com duas responsabilidades próprias:
+ * Vidro do painel sem captura de tela: o fundo visto é sempre o fundo real,
+ * composto ao vivo pela janela transparente.
  *
- * 1) desenhar o fundo já processado (desfoque, refração e escurecimento) antes
- *    da camada de vidro da biblioteca, garantindo que os sliders tenham efeito;
- * 2) desenhar o realce 3D da borda por cima dos botões, seguindo o dedo.
- *
- * Não adiciona filhos, então não altera a altura medida do painel.
+ * - o escurecimento é um retângulo preto semi-transparente desenhado atrás do vidro;
+ * - o desfoque é aplicado pela própria janela (backgroundBlurRadius);
+ * - a refração atua só na borda, nunca distorcendo o conteúdo atrás do painel;
+ * - o brilho 3D da borda é desenhado por cima, com intensidade baixa.
  */
 class PanelGlassView @JvmOverloads constructor(
     context: Context,
@@ -29,8 +28,17 @@ class PanelGlassView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : LiquidGlassView(context, attrs, defStyleAttr) {
 
-    /** Devolve um bitmap de propriedade do chamador; esta classe apenas desenha. */
-    var backdropProvider: ((RectF) -> Bitmap?)? = null
+    var darkness: Float = 0f
+        set(value) {
+            field = value.coerceIn(0f, 0.8f)
+            invalidate()
+        }
+
+    var edgeRefraction: Float = 0f
+        set(value) {
+            field = value.coerceIn(0f, 0.3f)
+            invalidate()
+        }
 
     var edgeIntensity: Float = 0f
         set(value) {
@@ -50,25 +58,36 @@ class PanelGlassView @JvmOverloads constructor(
             invalidate()
         }
 
-    private val backdropPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFilterBitmap = true }
     private val clipPath = Path()
-    private val dstRect = RectF()
+    private val darkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        style = Paint.Style.FILL
+    }
     private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val depthPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = Color.argb(110, 0, 0, 0)
+        color = Color.argb(60, 0, 0, 0)
     }
     private val hairlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = Color.argb(150, 255, 255, 255)
+        color = Color.argb(120, 255, 255, 255)
     }
+    private val fringePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val glowPath = Path()
     private val glowRect = RectF()
 
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (edgeTouchX == 0f && edgeTouchY == 0f) {
+            edgeTouchX = w / 2f
+            edgeTouchY = h / 2f
+        }
+    }
+
     override fun onDraw(canvas: Canvas) {
-        drawProcessedBackdrop(canvas)
+        drawDarkness(canvas)
         super.onDraw(canvas)
     }
 
@@ -77,35 +96,23 @@ class PanelGlassView @JvmOverloads constructor(
         drawEdgeGlow(canvas)
     }
 
-    private fun drawProcessedBackdrop(canvas: Canvas) {
-        if (width <= 0 || height <= 0) return
-        val bitmap = try {
-            backdropProvider?.invoke(RectF(0f, 0f, width.toFloat(), height.toFloat()))
-        } catch (_: Throwable) {
-            null
-        } ?: return
-        try {
-            val r = cornerRadius.coerceAtMost(min(width, height) / 2f)
-            clipPath.reset()
-            clipPath.addRoundRect(
-                0f, 0f, width.toFloat(), height.toFloat(), r, r, Path.Direction.CW
-            )
-            val save = canvas.save()
-            canvas.clipPath(clipPath)
-            dstRect.set(0f, 0f, width.toFloat(), height.toFloat())
-            canvas.drawBitmap(bitmap, null, dstRect, backdropPaint)
-            canvas.restoreToCount(save)
-        } catch (_: Throwable) {
-            // Um clipPath em canvas de hardware pode falhar em alguns devices;
-            // nesse caso o painel continua desenhando sem o fundo processado.
-        }
+    /** Escurece ao vivo o que está atrás da janela — sem print e sem recorte. */
+    private fun drawDarkness(canvas: Canvas) {
+        if (darkness <= 0.001f || width <= 0 || height <= 0) return
+        val r = cornerRadius.coerceAtMost(min(width, height) / 2f)
+        clipPath.reset()
+        clipPath.addRoundRect(
+            0f, 0f, width.toFloat(), height.toFloat(), r, r, Path.Direction.CW
+        )
+        darkPaint.alpha = (darkness * 255f).toInt().coerceIn(0, 204)
+        canvas.drawPath(clipPath, darkPaint)
     }
 
     private fun drawEdgeGlow(canvas: Canvas) {
         val a = edgeIntensity
         if (a <= 0.001f || width <= 2 || height <= 2) return
 
-        val inset = dp(1.5f)
+        val inset = dp(1f)
         glowRect.set(inset, inset, width - inset, height - inset)
         val r = cornerRadius.coerceAtMost(min(width, height) / 2f)
         glowPath.reset()
@@ -113,21 +120,21 @@ class PanelGlassView @JvmOverloads constructor(
 
         val gx = edgeTouchX.coerceIn(0f, width.toFloat())
         val gy = edgeTouchY.coerceIn(0f, height.toFloat())
-        val radius = max(dp(56f), min(width, height) * 0.38f)
+        val radius = max(dp(44f), min(width, height) * 0.34f)
 
-        depthPaint.alpha = (95 * a).toInt().coerceIn(0, 255)
-        depthPaint.strokeWidth = dp(4.5f)
+        depthPaint.alpha = (60 * a).toInt().coerceIn(0, 255)
+        depthPaint.strokeWidth = dp(3f)
         canvas.save()
-        canvas.translate(0f, dp(2.5f) * a)
+        canvas.translate(0f, dp(1.2f) * a)
         canvas.drawPath(glowPath, depthPaint)
         canvas.restore()
 
-        glowPaint.strokeWidth = dp(2.6f + 2f * a)
+        glowPaint.strokeWidth = dp(1.8f + 1.2f * a)
         glowPaint.shader = RadialGradient(
             gx, gy, radius,
             intArrayOf(
-                Color.argb((230 * a).toInt().coerceIn(0, 255), 255, 255, 255),
-                Color.argb((150 * a).toInt().coerceIn(0, 255), 190, 225, 255),
+                Color.argb((170 * a).toInt().coerceIn(0, 255), 255, 255, 255),
+                Color.argb((100 * a).toInt().coerceIn(0, 255), 190, 225, 255),
                 Color.TRANSPARENT
             ),
             floatArrayOf(0f, 0.32f, 1f),
@@ -135,8 +142,28 @@ class PanelGlassView @JvmOverloads constructor(
         )
         canvas.drawPath(glowPath, glowPaint)
 
-        hairlinePaint.alpha = (170 * a).toInt().coerceIn(0, 255)
-        hairlinePaint.strokeWidth = dp(1f)
+        hairlinePaint.alpha = (120 * a).toInt().coerceIn(0, 255)
+        hairlinePaint.strokeWidth = dp(0.8f)
         canvas.drawPath(glowPath, hairlinePaint)
+
+        // Refração apenas como franja colorida na borda: o fundo continua intacto.
+        // O slider muda tanto o deslocamento quanto a intensidade, então 0 e 100
+        // têm diferença visível sem distorcer o conteúdo atrás da janela.
+        val refraction = (edgeRefraction / 0.3f).coerceIn(0f, 1f)
+        if (refraction > 0.001f) {
+            val shift = dp(1.5f + 9f * refraction)
+            val alpha = (30f + 95f * refraction) * a
+            fringePaint.strokeWidth = dp(0.8f + 0.8f * refraction)
+            fringePaint.color = Color.argb(alpha.toInt().coerceIn(0, 255), 255, 90, 90)
+            canvas.save()
+            canvas.translate(shift, 0f)
+            canvas.drawPath(glowPath, fringePaint)
+            canvas.restore()
+            fringePaint.color = Color.argb(alpha.toInt().coerceIn(0, 255), 90, 150, 255)
+            canvas.save()
+            canvas.translate(-shift, 0f)
+            canvas.drawPath(glowPath, fringePaint)
+            canvas.restore()
+        }
     }
 }

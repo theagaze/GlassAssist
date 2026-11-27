@@ -7,12 +7,7 @@ import android.app.AlertDialog
 import android.app.Service
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
-import android.graphics.Paint
-import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -33,10 +28,6 @@ import com.glassassist.core.Prefs
 import com.glassassist.core.SystemActions
 import com.glassassist.core.TorchController
 import com.glassassist.core.VolumeController
-import java.util.concurrent.Executors
-import kotlin.math.abs
-import kotlin.math.max
-import kotlin.math.min
 
 /**
  * Conteúdo e óptica do painel. As duas páginas ficam infladas desde a instalação:
@@ -58,9 +49,6 @@ class PanelController(
     }
 
     private val handler = Handler(Looper.getMainLooper())
-    private val cropExecutor = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "glassassist-crop").apply { isDaemon = true }
-    }
     private val panelGlass: PanelGlassView = panelView.findViewById(R.id.panelGlass)
     private val pagesContainer: PagesContainer = panelView.findViewById(R.id.pagesContainer)
     private val pagePrev: ImageView = panelView.findViewById(R.id.pagePrev)
@@ -72,34 +60,10 @@ class PanelController(
     private val tiles = arrayOf(mutableListOf<LiquidGlassFab>(), mutableListOf<LiquidGlassFab>())
 
     private var page = prefs.page.coerceIn(0, 1)
-    private var lightBackdrop = false
-    /** Só libera blur/shader no painel depois que existe um backdrop real (não 1x1). */
-    private var fullOpticsReady = false
-    private var screenWidth = 0
-    private var screenHeight = 0
-    private var panelRect = GlassRect(0, 0, 0, 0)
     private var disposed = false
 
-    private val transparentSource = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).apply {
-        eraseColor(Color.TRANSPARENT)
-    }
-    /**
-     * Print de tela completo (amostrado): o recorte é feito na hora do draw.
-     * NUNCA reciclamos este bitmap: a biblioteca guarda referência em
-     * cachedBackdrop/cachedBlurred e desenha sobre ele em frames posteriores.
-     */
-    @Volatile private var backdrop: Bitmap? = null
-    /**
-     * Cópia do print já escurecida/desfocada/com dispersão aplicada. É recortada
-     * no draw, então o efeito dos sliders aparece de fato e não depende do
-     * pipeline interno da biblioteca (que é desligado quando nós capturamos o fundo).
-     * Nunca reciclamos esta referência: a lib pode estar desenhando o frame anterior.
-     */
-    @Volatile private var processedBackdrop: Bitmap? = null
-    private var processedKey = ""
-    /** Último recorte reaproveitado durante a animação (evita alocar a cada frame). */
-    @Volatile private var croppedBackdrop: Bitmap? = null
-    private var cropKey = ""
+    /** Borda sempre levemente visível: a refração do slider aparece sem segurar. */
+    private val baseEdgeIntensity = 0.42f
 
     private var dragDirection = 0
     private var dragNeighbor: ViewGroup? = null
@@ -113,31 +77,19 @@ class PanelController(
         installEdgePress()
         // A biblioteca recicla o bitmap devolvido: sempre uma cópia nova.
         // Qualquer exceção aqui seria propagada para o onDraw e mataria o processo.
+        // Backdrop neutro apenas para a biblioteca não desenhar o fallback branco.
+        // Nenhuma captura de tela é feita: o fundo da janela continua ao vivo.
         ballGlass.setCustomBackdropCapture { _ -> safeTinyBitmap() }
-        // O fundo processado é desenhado pelo próprio PanelGlassView; a lib recebe
-        // um bitmap neutro para não reaplicar blur/refração por cima dele.
         panelGlass.setCustomBackdropCapture { _ -> safeTinyBitmap() }
-        panelGlass.backdropProvider = { bounds -> safeCropBackdrop(bounds) }
         applyOptics()
         setPageImmediate(page)
     }
 
+    /** A lib recicla o bitmap devolvido, então cada chamada cria um 1x1 transparente. */
     private fun safeTinyBitmap(): Bitmap = try {
-        if (!disposed && !transparentSource.isRecycled) {
-            transparentSource.copy(Bitmap.Config.ARGB_8888, false)
-        } else {
-            transparentBitmap(1, 1)
-        }
+        Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.TRANSPARENT) }
     } catch (_: Throwable) {
-        transparentBitmap(1, 1)
-    }
-
-    private fun safeCropBackdrop(bounds: RectF): Bitmap = try {
-        cropBackdrop(bounds)
-    } catch (_: Throwable) {
-        val w = bounds.width().toInt().coerceIn(1, 4096)
-        val h = bounds.height().toInt().coerceIn(1, 4096)
-        transparentBitmap(w, h)
+        Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
     }
 
     private fun dp(value: Int): Int = (value * service.resources.displayMetrics.density).toInt()
@@ -146,10 +98,9 @@ class PanelController(
     // ------------------------------------------------------------------ óptica
 
     /**
-     *Configurações são lidas aqui e aplicadas na hora. A bolinha usa um backdrop
-     *transparente 1x1:Pipeline de blur/shader com um bitmap desse tamanho pode falhar no
-     *primeiro draw, então ela fica só com borda especular e tint. O painel, que tem
-     *backdrop real, usa o pipeline completo de refração/dispersão.
+     * Configurações lidas e aplicadas na hora. Nenhuma janela tira foto do fundo:
+     * o desfoque é nativo da janela, o escurecimento é um overlay preto semitransparente
+     * e a refração aparece apenas como franja na borda do vidro.
      */
     fun applyOptics() {
         if (disposed) return
@@ -181,8 +132,11 @@ class PanelController(
             collectFrameStats = false
         }
 
-        // Painel: o fundo já chega processado do PanelGlassView. A biblioteca fica
-        // só com o tint e a borda especular; blur/refração nela seriam redundantes.
+        // Painel: fundo ao vivo. A janela aplica o blur; aqui só ficam o tint,
+        // a borda especular, o escurecimento e a franja de refração da borda.
+        panelGlass.darkness = prefs.panelDarkness.coerceIn(0, 80) / 100f
+        panelGlass.edgeRefraction = prefs.refractionStrength.coerceIn(0f, 0.3f)
+        panelGlass.edgeIntensity = baseEdgeIntensity
         panelGlass.apply {
             material = GlassMaterial.CLEAR
             accessibilityMode = GlassAccessibilityMode.FORCE_FULL
@@ -216,10 +170,7 @@ class PanelController(
             refractionHeight = dp(64f)
             blurAmount = 0f
             dispersionStrength = 0f
-            setGlassTint(
-                if (lightBackdrop) Color.WHITE else Color.rgb(10, 16, 24),
-                if (lightBackdrop) 0.03f else 0.10f
-            )
+            setGlassTint(Color.rgb(10, 16, 24), 0.10f)
             collectFrameStats = false
         }
         ballGlass.post {
@@ -228,258 +179,11 @@ class PanelController(
                 panelGlass.invalidate()
             }
         }
-        // Os sliders também são aplicados no próprio bitmap de fundo.
-        scheduleBackdropProcessing()
         } catch (t: Throwable) {
             // Nunca deixa uma exceção de propriedade da lib chegar ao onDraw.
             Log.e("GlassAssist", "Falha ao aplicar óptica", t)
         }
     }
-
-    // ------------------------------------------------------------------ backdrop
-
-    fun setScreen(width: Int, height: Int) {
-        screenWidth = width
-        screenHeight = height
-    }
-
-    fun setGeometry(rect: GlassRect) {
-        panelRect = rect
-    }
-
-    /** Troca o print completo. O recorte é feito no draw, com a posição atual da view. */
-    fun setBackdrop(bitmap: Bitmap?) {
-        if (disposed) return
-        val usable = bitmap != null && !bitmap.isRecycled && bitmap.width > 1 && bitmap.height > 1
-        val clean = if (usable) bitmap else null
-        val wasReady = fullOpticsReady
-        // A referência antiga é apenas solta. Reciclar aqui derrubava o app
-        // quando a biblioteca ainda desenhava um frame com o bitmap anterior.
-        backdrop = clean
-        processedBackdrop = null
-        processedKey = ""
-        croppedBackdrop = null
-        cropKey = ""
-        fullOpticsReady = clean != null
-        scheduleBackdropProcessing()
-        // Só reconfigura a lib quando o estado óptico muda. Reaplicar a cada
-        // captura recriava o pipeline de shader e causava instabilidade.
-        if (wasReady != fullOpticsReady) applyOptics()
-        val rect = panelRect
-        try {
-            cropExecutor.execute {
-                val light = try {
-                    clean?.takeIf { !it.isRecycled && !disposed }
-                        ?.let { measureLight(it, rect.x, rect.y, rect.w, rect.h) } ?: false
-                } catch (_: Throwable) {
-                    false
-                }
-                handler.post {
-                    if (disposed || backdrop !== clean) return@post
-                    if (light != lightBackdrop) {
-                        lightBackdrop = light
-                        applyOptics()
-                    }
-                }
-            }
-        } catch (_: Throwable) {
-            // O executor pode ter sido desligado durante o dispose.
-        }
-    }
-
-    /**
-     * Processa o print completo fora da main thread. O resultado é o que o recorte
-     * do vidro usa, então desfoque, refração e escurecimento são sempre visíveis.
-     */
-    private fun scheduleBackdropProcessing() {
-        val source = backdrop ?: return
-        val key = listOf(
-            prefs.blurRadius,
-            prefs.refractionStrength,
-            prefs.panelDarkness,
-            source.width,
-            source.height
-        ).joinToString("|")
-        if (key == processedKey && processedBackdrop != null) return
-        processedKey = key
-        try {
-            cropExecutor.execute {
-                val src = source.takeIf { !it.isRecycled && !disposed } ?: return@execute
-                val result = try {
-                    buildProcessedBackdrop(src)
-                } catch (t: Throwable) {
-                    Log.e("GlassAssist", "Falha ao processar o fundo do painel", t)
-                    null
-                }
-                handler.post {
-                    if (disposed || backdrop !== src) return@post
-                    if (result != null) {
-                        // A referência antiga é apenas solta, nunca reciclada.
-                        processedBackdrop = result
-                        croppedBackdrop = null
-                        cropKey = ""
-                        if (!disposed) panelGlass.invalidate()
-                    }
-                }
-            }
-        } catch (_: Throwable) {
-            // Executor já desligado no dispose.
-        }
-    }
-
-    private fun buildProcessedBackdrop(src: Bitmap): Bitmap {
-        val amount = prefs.blurRadius.coerceIn(0, 100) / 100f
-        val refraction = prefs.refractionStrength.coerceIn(0f, 0.3f)
-        val darkness = prefs.panelDarkness.coerceIn(0, 80) / 100f
-
-        val blurred: Bitmap = if (amount <= 0.01f) {
-            src.copy(Bitmap.Config.ARGB_8888, false)
-        } else {
-            val scale = (1f - amount * 0.88f).coerceIn(0.10f, 1f)
-            val smallW = max(1, (src.width * scale).toInt())
-            val smallH = max(1, (src.height * scale).toInt())
-            val small = Bitmap.createScaledBitmap(src, smallW, smallH, true)
-            val big = Bitmap.createScaledBitmap(small, src.width, src.height, true)
-            if (big !== small) small.recycle()
-            big
-        }
-
-        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
-        try {
-            val keepR = 1f - darkness
-            val keepG = 1f - darkness * 0.94f
-            val keepB = 1f - darkness * 0.86f
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                isFilterBitmap = true
-                colorFilter = ColorMatrixColorFilter(
-                    ColorMatrix(
-                        floatArrayOf(
-                            keepR, 0f, 0f, 0f, 0f,
-                            0f, keepG, 0f, 0f, 0f,
-                            0f, 0f, keepB, 0f, 0f,
-                            0f, 0f, 0f, 1f, 0f
-                        )
-                    )
-                )
-            }
-            Canvas(out).drawBitmap(blurred, 0f, 0f, paint)
-            applyRefraction(out, refraction)
-        } finally {
-            if (blurred !== src) blurred.recycle()
-        }
-        return out
-    }
-
-    /** Separa R/B perto das bordas: o slider de refração passa a ter efeito real. */
-    private fun applyRefraction(bitmap: Bitmap, strength: Float) {
-        val maxShift = 12f * (strength / 0.3f)
-        if (maxShift < 0.2f) return
-        val w = bitmap.width
-        val h = bitmap.height
-        if (w < 3 || h < 3) return
-        val pixels = IntArray(w * h)
-        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-        val result = IntArray(pixels.size)
-        val cx = w / 2f
-        val cy = h / 2f
-        for (y in 0 until h) {
-            val ny = (y - cy) / cy
-            for (x in 0 until w) {
-                val nx = (x - cx) / cx
-                val edge = min(1f, (abs(nx) + abs(ny)) * 0.75f)
-                val shift = maxShift * edge
-                val rx = (x + shift).toInt().coerceIn(0, w - 1)
-                val bx = (x - shift).toInt().coerceIn(0, w - 1)
-                val ry = (y + shift * 0.35f).toInt().coerceIn(0, h - 1)
-                val by = (y - shift * 0.35f).toInt().coerceIn(0, h - 1)
-                val idx = y * w + x
-                result[idx] = Color.argb(
-                    Color.alpha(pixels[idx]),
-                    Color.red(pixels[ry * w + rx]),
-                    Color.green(pixels[idx]),
-                    Color.blue(pixels[by * w + bx])
-                )
-            }
-        }
-        bitmap.setPixels(result, 0, w, 0, 0, w, h)
-    }
-
-    private fun measureLight(source: Bitmap, x: Int, y: Int, w: Int, h: Int): Boolean {
-        if (screenWidth <= 0 || screenHeight <= 0 || w <= 0 || h <= 0) return false
-        val sx = source.width.toFloat() / screenWidth
-        val sy = source.height.toFloat() / screenHeight
-        val x0 = (x * sx).toInt().coerceIn(0, source.width - 1)
-        val y0 = (y * sy).toInt().coerceIn(0, source.height - 1)
-        val x1 = ((x + w) * sx).toInt().coerceIn(x0 + 1, source.width)
-        val y1 = ((y + h) * sy).toInt().coerceIn(y0 + 1, source.height)
-        val stepX = ((x1 - x0) / 6).coerceAtLeast(1)
-        val stepY = ((y1 - y0) / 6).coerceAtLeast(1)
-        var sum = 0.0
-        var count = 0
-        var py = y0
-        while (py < y1) {
-            var px = x0
-            while (px < x1) {
-                val pixel = source.getPixel(px, py)
-                sum += (0.299 * Color.red(pixel) + 0.587 * Color.green(pixel) +
-                    0.114 * Color.blue(pixel)) / 255.0
-                count++
-                px += stepX
-            }
-            py += stepY
-        }
-        return count > 0 && sum / count > 0.62
-    }
-
-    /**
-     * Recorte direto do print de tela na posição real da janela. Usar a posição
-     * atual (e não uma geometria congelada) elimina o deslocamento do fundo quando
-     * a bolinha é movida ou quando o painel é reancorado.
-     */
-    private fun cropBackdrop(bounds: RectF): Bitmap {
-        val w = bounds.width().toInt().coerceAtLeast(1)
-        val h = bounds.height().toInt().coerceAtLeast(1)
-        val processed = processedBackdrop
-        val source = if (processed != null && !processed.isRecycled) processed else backdrop
-        if (source == null || source.isRecycled || screenWidth <= 0 || screenHeight <= 0) {
-            return transparentBitmap(w, h)
-        }
-        val location = IntArray(2)
-        panelGlass.getLocationOnScreen(location)
-        // O recorte é guardado: durante o morph o canvas é transformado, mas o
-        // tamanho/posição da janela não muda. Sem cache eram alocados bitmaps a
-        // cada frame, deixando a abertura travada.
-        val key = listOf(
-            System.identityHashCode(source), w, h,
-            location[0], location[1], screenWidth, screenHeight
-        ).joinToString("|")
-        croppedBackdrop?.let { cached ->
-            if (!cached.isRecycled && cached.width == w && cached.height == h && cropKey == key) {
-                return cached
-            }
-        }
-        val sx = source.width.toFloat() / screenWidth
-        val sy = source.height.toFloat() / screenHeight
-        val x = ((location[0] + bounds.left) * sx).toInt()
-            .coerceIn(0, (source.width - 1).coerceAtLeast(0))
-        val y = ((location[1] + bounds.top) * sy).toInt()
-            .coerceIn(0, (source.height - 1).coerceAtLeast(0))
-        val bw = (w * sx).toInt().coerceIn(1, source.width - x)
-        val bh = (h * sy).toInt().coerceIn(1, source.height - y)
-        val cropped = try {
-            Bitmap.createBitmap(source, x, y, bw, bh)
-        } catch (_: Throwable) {
-            return transparentBitmap(w, h)
-        }
-        val out = cropped.copy(Bitmap.Config.ARGB_8888, false)
-        if (cropped !== source && !cropped.isRecycled) cropped.recycle()
-        cropKey = key
-        croppedBackdrop = out
-        return out
-    }
-
-    private fun transparentBitmap(w: Int, h: Int): Bitmap =
-        Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.TRANSPARENT) }
 
     // ------------------------------------------------------------------ páginas
 
@@ -590,8 +294,8 @@ class PanelController(
     // ------------------------------------------------------------------ borda 3D
 
     private fun installEdgePress() {
-        // Distância confortável: bastante perspectiva sem esticar o painel.
-        panelGlass.cameraDistance = dp(120f)
+        // Perspectiva bem fraca: o painel praticamente não se move ao segurar a borda.
+        panelGlass.cameraDistance = dp(220f)
         // Retornar false preserva clips, setas, paginação e botões.
         panelGlass.setOnTouchListener { _, event ->
             handlePanelEdgeTouch(event)
@@ -607,8 +311,10 @@ class PanelController(
         val x = event.x.coerceIn(0f, w.toFloat())
         val y = event.y.coerceIn(0f, h.toFloat())
         val distanceToEdge = minOf(x, y, w - x, h - y)
-        val zone = dp(72f)
-        val proximity = (1f - distanceToEdge / zone).coerceIn(0f, 1f)
+        val zone = dp(36f)
+        // Curva quadrada: perto do meio da borda o efeito ainda é bem discreto.
+        val raw = (1f - distanceToEdge / zone).coerceIn(0f, 1f)
+        val proximity = raw * raw * 0.55f
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
@@ -617,10 +323,11 @@ class PanelController(
                 if (proximity > 0f) {
                     edgeAnimator?.cancel()
                     edgeAnimator = null
-                    panelGlass.edgeIntensity = 0.55f + 0.45f * proximity
-                    panelGlass.rotationY = ((x / w) - 0.5f) * 15f * proximity
-                    panelGlass.rotationX = -(((y / h) - 0.5f) * 15f * proximity)
-                    panelGlass.translationZ = dp(6f) * proximity
+                    // Movimento mínimo: só um brilho local, sem inclinar o painel.
+                    panelGlass.edgeIntensity = (baseEdgeIntensity + 0.14f * proximity).coerceIn(0f, 1f)
+                    panelGlass.rotationY = ((x / w) - 0.5f) * 2f * proximity
+                    panelGlass.rotationX = -(((y / h) - 0.5f) * 2f * proximity)
+                    panelGlass.translationZ = dp(1f) * proximity
                     panelGlass.invalidate()
                 } else {
                     releaseEdgePress()
@@ -638,27 +345,31 @@ class PanelController(
         val fromX = panelGlass.rotationX
         val fromY = panelGlass.rotationY
         val fromZ = panelGlass.translationZ
-        if (!animated || fromIntensity <= 0.001f) {
-            panelGlass.edgeIntensity = 0f
+        panelGlass.edgeTouchX = panelGlass.width / 2f
+        panelGlass.edgeTouchY = panelGlass.height / 2f
+        if (!animated || fromIntensity <= baseEdgeIntensity + 0.001f) {
+            panelGlass.edgeIntensity = baseEdgeIntensity
             panelGlass.rotationX = 0f
             panelGlass.rotationY = 0f
             panelGlass.translationZ = 0f
             return
         }
         edgeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 190L
+            duration = 170L
             interpolator = DecelerateInterpolator(1.4f)
             addUpdateListener { animator ->
                 val t = animator.animatedValue as Float
-                panelGlass.edgeIntensity = fromIntensity * (1f - t)
-                panelGlass.rotationX = fromX * (1f - t)
-                panelGlass.rotationY = fromY * (1f - t)
-                panelGlass.translationZ = fromZ * (1f - t)
+                val remain = 1f - t
+                panelGlass.edgeIntensity =
+                    baseEdgeIntensity + (fromIntensity - baseEdgeIntensity) * remain
+                panelGlass.rotationX = fromX * remain
+                panelGlass.rotationY = fromY * remain
+                panelGlass.translationZ = fromZ * remain
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     if (edgeAnimator === this@apply) {
-                        panelGlass.edgeIntensity = 0f
+                        panelGlass.edgeIntensity = baseEdgeIntensity
                         panelGlass.rotationX = 0f
                         panelGlass.rotationY = 0f
                         panelGlass.translationZ = 0f
@@ -917,17 +628,14 @@ class PanelController(
     }
 
     private fun applyAppearance() {
-        val icon = if (lightBackdrop) 0xFF0A0E13.toInt() else Color.WHITE
-        val tint = if (lightBackdrop) Color.WHITE else Color.BLACK
-        val strength = if (lightBackdrop) 0.20f else 0.24f
         for (index in 0..1) {
             tiles[index].forEach { fab ->
-                fab.setIconTint(icon)
-                fab.setGlassTint(tint, strength)
+                fab.setIconTint(Color.WHITE)
+                fab.setGlassTint(Color.BLACK, 0.24f)
                 fab.invalidate()
             }
         }
-        val arrow = if (lightBackdrop) 0xD90A0E13.toInt() else 0xD9FFFFFF.toInt()
+        val arrow = 0xD9FFFFFF.toInt()
         pagePrev.imageTintList = ColorStateList.valueOf(arrow)
         pageNext.imageTintList = ColorStateList.valueOf(arrow)
     }
@@ -957,14 +665,8 @@ class PanelController(
         edgeAnimator?.cancel()
         edgeAnimator = null
         handler.removeCallbacksAndMessages(null)
-        cropExecutor.shutdownNow()
-        // Não reciclar nada aqui: a lib ainda pode estar desenhando o frame final.
-        // Ela libera os próprios caches no onDetachedFromWindow; o GC faz o resto.
-        backdrop = null
-        processedBackdrop = null
-        processedKey = ""
-        croppedBackdrop = null
-        cropKey = ""
-        fullOpticsReady = false
+        // A lib libera os próprios caches no onDetachedFromWindow.
+        panelGlass.darkness = 0f
+        panelGlass.edgeIntensity = 0f
     }
 }

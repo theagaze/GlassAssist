@@ -15,17 +15,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.Rect
-import android.graphics.RectF
-import android.graphics.Point
 import android.os.Build
 import android.os.Handler
-import android.os.PowerManager
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
@@ -50,7 +43,6 @@ import com.glassassist.ServiceRestartReceiver
 import com.glassassist.core.Prefs
 import com.glassassist.core.SystemActions
 import com.glassassist.core.VolumeController
-import java.io.File
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -62,10 +54,10 @@ data class GlassRect(val x: Int, val y: Int, val w: Int, val h: Int) {
 /**
  * Três janelas transparentes empilhadas: catcher (fora), painel e bolinha.
  *
- * O painel é instalado uma única vez, já com óptica e backdrop aquecidos. No toque,
+ * O painel é instalado uma única vez, com vidro e blur nativo da janela. No toque,
  * ele faz morph a partir do centro da bolinha (scaleX/scaleY/alpha) enquanto a
- * bolinha desaparece — não há "sumir e depois abrir". Nenhuma captura acontece no
- * clique: o backdrop é renovado em segundo plano enquanto o painel está fechado.
+ * bolinha desaparece — não há "sumir e depois abrir". O fundo do painel é o fundo
+ * real da tela, composto ao vivo pelo sistema: nenhuma foto é tirada.
  */
 class FloatingBallService : Service(), PanelController.Host {
 
@@ -94,8 +86,6 @@ class FloatingBallService : Service(), PanelController.Host {
 
     private var panelOpen = false
     private var morphing = false
-    private var backdropBusy = false
-    private var lastCaptureRequestAt = 0L
     private val morphSprings = mutableListOf<SpringAnimation>()
     private var exitAnimator: ValueAnimator? = null
     private var snapSpring: SpringAnimation? = null
@@ -136,11 +126,6 @@ class FloatingBallService : Service(), PanelController.Host {
         if (panelOpen || morphing) return@Runnable
         ballView?.animate()?.alpha(prefs.inactiveAlpha)?.setDuration(320L)?.start()
     }
-    private val backdropRunnable = Runnable {
-        prewarmBackdrop()
-        scheduleBackdropRefresh()
-    }
-
     /**
      * A janela de overlay não pode aparecer sobre o keyguard. O mesmo receiver
      * recupera a bolinha quando o usuário desbloqueia (inclusive ao abrir as
@@ -261,17 +246,6 @@ class FloatingBallService : Service(), PanelController.Host {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
 
-    @Suppress("DEPRECATION")
-    private fun realDisplaySize(): Point {
-        val point = Point(screenWidth, screenHeight)
-        try {
-            @Suppress("DEPRECATION")
-            wm.defaultDisplay.getRealSize(point)
-        } catch (_: Throwable) {
-        }
-        return point
-    }
-
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java)
@@ -356,13 +330,7 @@ class FloatingBallService : Service(), PanelController.Host {
         ballView = ball
         ballGlass = ball.findViewById(R.id.ballGlass)
 
-        controller = PanelController(this, panel, ballGlass!!, prefs, this).also {
-            // O screencap cobre o display inteiro; usar o tamanho real evita que o
-            // recorte do backdrop fique deslocado (acima/abaixo) conforme a barra
-            // de navegação ou o recorte da janela do app.
-            val real = realDisplaySize()
-            it.setScreen(real.x, real.y)
-        }
+        controller = PanelController(this, panel, ballGlass!!, prefs, this)
 
         panelRectNow = computePanelRect()
         val panelLp = WindowManager.LayoutParams(
@@ -376,6 +344,7 @@ class FloatingBallService : Service(), PanelController.Host {
             y = panelRectNow.y
         }
         panelParams = panelLp
+        applyPanelWindowBlur()
         wm.addView(panel, panelLp)
         parkPanel()
 
@@ -398,11 +367,8 @@ class FloatingBallService : Service(), PanelController.Host {
 
         afterFirstLayout(ball) {
             controller?.restorePage()
-            controller?.setGeometry(panelRectNow)
             controller?.applyOptics()
             updatePanelPosition()
-            prewarmBackdrop()
-            scheduleBackdropRefresh()
         }
     }
 
@@ -449,7 +415,22 @@ class FloatingBallService : Service(), PanelController.Host {
         } catch (_: IllegalArgumentException) {
         }
         setCollapsedTransform()
-        controller?.setGeometry(rect)
+    }
+
+    /**
+     * Blur ao vivo do sistema: ele desfoca exatamente o que está atrás da janela,
+     * sem screenshot, arquivo ou recorte. O slider vira um raio em pixels.
+     */
+    private fun applyPanelWindowBlur() {
+        val lp = panelParams ?: return
+        val amount = prefs.blurRadius.coerceIn(0, 100) / 100f
+        val radius = if (amount <= 0f) 0 else dp(2f + 22f * amount).toInt()
+        lp.setBlurBehindRadius(radius)
+        val view = panelView ?: return
+        try {
+            wm.updateViewLayout(view, lp)
+        } catch (_: IllegalArgumentException) {
+        }
     }
 
     private fun setCollapsedPivot() {
@@ -689,7 +670,6 @@ class FloatingBallService : Service(), PanelController.Host {
                             wm.updateViewLayout(v, lp)
                         } catch (_: IllegalArgumentException) {
                         }
-                        // Não recalcula o backdrop a cada MOVE: só ao soltar.
                     }
 
                     Mode.NONE -> Unit
@@ -700,9 +680,6 @@ class FloatingBallService : Service(), PanelController.Host {
                 handler.removeCallbacks(holdRunnable)
                 pressBall(false)
                 if (!holdFired && event.actionMasked == MotionEvent.ACTION_UP && mode == Mode.NONE) {
-                    // Print novo começa antes do painel aparecer: a morph usa o
-                    // backdrop aquecido e troca para o fresco sem delay visual.
-                    prewarmBackdrop(force = true)
                     openPanel()
                 }
                 if (mode == Mode.DRAG) {
@@ -821,116 +798,9 @@ class FloatingBallService : Service(), PanelController.Host {
         )
         panelHeight = panelContent?.measuredHeight?.coerceAtLeast(dp(176)) ?: panelHeight
         updatePanelPosition()
+        applyPanelWindowBlur()
         controller?.applyOptics()
-        prewarmBackdrop(force = true)
         toast("Configurações aplicadas")
-    }
-
-    // ------------------------------------------------------------------ backdrop
-
-    /**
-     * Captura em segundo plano: o clique nunca espera pelo screencap. `force` é
-     * usado na abertura para substituir o print antigo assim que ele chegar.
-     * Com tela desligada não há motivo para capturar — economia de bateria.
-     */
-    private fun prewarmBackdrop(force: Boolean = false) {
-        if (backdropBusy || panelOpen || morphing) return
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastCaptureRequestAt < if (force) 900L else 5000L) return
-        val power = getSystemService(Context.POWER_SERVICE) as? PowerManager
-        if (power != null && !power.isInteractive) return
-        if (keyguardLocked()) return
-        backdropBusy = true
-        lastCaptureRequestAt = now
-        Thread {
-            var bitmap: Bitmap? = null
-            try {
-                val file = File(cacheDir, "glass_backdrop.png")
-                val result = SystemActions.captureScreenTo(file)
-                if (result.ok) {
-                    val decoded = BitmapFactory.decodeFile(
-                        file.absolutePath, BitmapFactory.Options().apply { inSampleSize = 2 }
-                    )
-                    // decodeFile devolve bitmap imutável; eraseBallFromBackdrop desenha
-                    // sobre ele. Sem essa cópia a exceção descartava o print inteiro e
-                    // nenhum slider de óptica/escurecimento chegava ao painel.
-                    bitmap = if (decoded != null && !decoded.isMutable) {
-                        decoded.copy(Bitmap.Config.ARGB_8888, true).also { decoded.recycle() }
-                    } else {
-                        decoded
-                    }
-                }
-                file.delete()
-                // A própria bolinha aparece no screencap; substitui a região por um
-                // trecho vizinho para o vidro não refratar uma cópia de si mesmo.
-                bitmap?.let { eraseBallFromBackdrop(it) }
-            } catch (t: Throwable) {
-                Log.e("GlassAssist", "Falha na captura do backdrop", t)
-                bitmap?.let { if (!it.isRecycled) it.recycle() }
-                bitmap = null
-            } finally {
-                handler.post {
-                    backdropBusy = false
-                    val safe = bitmap
-                    if (safe != null && !safe.isRecycled) {
-                        val current = controller
-                        if (current != null) current.setBackdrop(safe)
-                        else safe.recycle()
-                    }
-                }
-            }
-        }.apply { isDaemon = true }.start()
-    }
-
-    /** Remove a bolinha do print usando um trecho vizinho da mesma imagem. */
-    private fun eraseBallFromBackdrop(bitmap: Bitmap) {
-        if (!bitmap.isMutable) return
-        val real = realDisplaySize()
-        if (real.x <= 0 || real.y <= 0) return
-        val sx = bitmap.width.toFloat() / real.x
-        val sy = bitmap.height.toFloat() / real.y
-        val pad = dp(6)
-        val x = ((ballX - pad) * sx).toInt().coerceIn(0, bitmap.width - 1)
-        val y = ((ballY - pad) * sy).toInt().coerceIn(0, bitmap.height - 1)
-        val w = ((ballSize + pad * 2) * sx).toInt().coerceIn(1, (bitmap.width - x).coerceAtLeast(1))
-        val h = ((ballSize + pad * 2) * sy).toInt().coerceIn(1, (bitmap.height - y).coerceAtLeast(1))
-
-        val sxSrc: Int
-        val sySrc: Int
-        when {
-            y >= h + 4 -> { sxSrc = x; sySrc = y - h - 4 }
-            y + h + 4 <= bitmap.height - h -> { sxSrc = x; sySrc = y + h + 4 }
-            x >= w + 4 -> { sxSrc = x - w - 4; sySrc = y }
-            x + w + 4 <= bitmap.width - w -> { sxSrc = x + w + 4; sySrc = y }
-            else -> return
-        }
-        val region = try {
-            Bitmap.createBitmap(bitmap, sxSrc, sySrc, w, h)
-        } catch (_: Throwable) {
-            return
-        }
-        // createBitmap() pode compartilhar os pixels com a origem; copia para
-        // não desenhar um bitmap sobre si mesmo (causava artefatos no recorte).
-        val patch = try {
-            region.copy(Bitmap.Config.ARGB_8888, false)
-        } catch (_: Throwable) {
-            region.recycle()
-            return
-        }
-        region.recycle()
-        try {
-            Canvas(bitmap).drawBitmap(
-                patch, Rect(0, 0, w, h),
-                RectF(x.toFloat(), y.toFloat(), (x + w).toFloat(), (y + h).toFloat()), null
-            )
-        } finally {
-            patch.recycle()
-        }
-    }
-
-    private fun scheduleBackdropRefresh() {
-        handler.removeCallbacks(backdropRunnable)
-        handler.postDelayed(backdropRunnable, 6000L)
     }
 
     override fun takeCleanScreenshot() {
