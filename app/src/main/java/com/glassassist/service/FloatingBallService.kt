@@ -342,13 +342,15 @@ class FloatingBallService : Service(), PanelController.Host {
         val panel = LayoutInflater.from(this).inflate(R.layout.overlay_panel, null)
         panelView = panel
         panelGlass = panel.findViewById(R.id.panelGlass)
-        panel.measure(
+        // Medir só o conteúdo: o vidro é MATCH_PARENT e não pode definir a altura.
+        val panelContent = panel.findViewById<View>(R.id.panelContent)
+        panelContent.measure(
             View.MeasureSpec.makeMeasureSpec(panelWidth, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(
                 (screenHeight - dp(20)).coerceAtLeast(dp(160)), View.MeasureSpec.AT_MOST
             )
         )
-        panelHeight = panel.measuredHeight.coerceAtLeast(dp(176))
+        panelHeight = panelContent.measuredHeight.coerceAtLeast(dp(176))
 
         val ball = LayoutInflater.from(this).inflate(R.layout.overlay_ball, null)
         ballView = ball
@@ -489,8 +491,8 @@ class FloatingBallService : Service(), PanelController.Host {
         view: View,
         property: FloatPropertyCompat<View>,
         final: Float,
-        damping: Float = 0.82f,
-        stiffness: Float = 450f
+        damping: Float = 0.86f,
+        stiffness: Float = 150f
     ): SpringAnimation = SpringAnimation(view, property, final).apply {
         setStartVelocity(0f)
         spring = SpringForce()
@@ -531,7 +533,12 @@ class FloatingBallService : Service(), PanelController.Host {
         }
         sx.addEndListener { _, canceled, _, _ -> if (!canceled) finishOpen() }
         morphSprings += listOf(sx, sy, pa, ba)
-        morphSprings.forEach { it.start() }
+        morphSprings.forEach { if (it !== ba) it.start() }
+        // O botão some um instante depois que a expansão começa: parece que ele
+        // se transforma no painel, em vez de trocar de objeto.
+        handler.postDelayed({
+            if (morphing && panelOpen && morphSprings.contains(ba)) ba.start()
+        }, 70L)
     }
 
     private fun finishOpen() {
@@ -585,7 +592,7 @@ class FloatingBallService : Service(), PanelController.Host {
         val toY = collapsedScaleY()
 
         exitAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 280L
+            duration = 340L
             interpolator = DecelerateInterpolator(1.5f)
             addUpdateListener { animator ->
                 val t = animator.animatedFraction
@@ -787,27 +794,33 @@ class FloatingBallService : Service(), PanelController.Host {
         val oldSnap = snapSpring
         snapSpring = null
         oldSnap?.cancel()
-        val lp = ballParams ?: return
-        val view = ballView ?: return
-        lp.width = ballSize
-        lp.height = ballSize
-        lp.x = ballX
-        lp.y = ballY
-        try {
-            wm.updateViewLayout(view, lp)
-        } catch (_: IllegalArgumentException) {
+        val lp = ballParams
+        val view = ballView
+        if (lp != null && view != null) {
+            lp.width = ballSize
+            lp.height = ballSize
+            lp.x = ballX
+            lp.y = ballY
+            try {
+                wm.updateViewLayout(view, lp)
+            } catch (_: IllegalArgumentException) {
+            }
         }
 
         panelWidth = minOf(screenWidth - dp(20), dp(prefs.panelSizeDp)).coerceAtLeast(dp(188))
-        panelView?.measure(
+        // Nenhuma janela pode ficar inclinada/estirada depois de mexer nos sliders.
+        controller?.resetEdgePress()
+        // Botões podem mudar de tamanho: reconstrói primeiro e mede só o conteúdo.
+        controller?.rebuildTiles()
+        val panelContent = panelView?.findViewById<View>(R.id.panelContent)
+        panelContent?.measure(
             View.MeasureSpec.makeMeasureSpec(panelWidth, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(
                 (screenHeight - dp(20)).coerceAtLeast(dp(160)), View.MeasureSpec.AT_MOST
             )
         )
-        panelHeight = panelView?.measuredHeight?.coerceAtLeast(dp(176)) ?: panelHeight
+        panelHeight = panelContent?.measuredHeight?.coerceAtLeast(dp(176)) ?: panelHeight
         updatePanelPosition()
-        controller?.rebuildTiles()
         controller?.applyOptics()
         prewarmBackdrop(force = true)
         toast("Configurações aplicadas")
@@ -835,9 +848,17 @@ class FloatingBallService : Service(), PanelController.Host {
                 val file = File(cacheDir, "glass_backdrop.png")
                 val result = SystemActions.captureScreenTo(file)
                 if (result.ok) {
-                    bitmap = BitmapFactory.decodeFile(
+                    val decoded = BitmapFactory.decodeFile(
                         file.absolutePath, BitmapFactory.Options().apply { inSampleSize = 2 }
                     )
+                    // decodeFile devolve bitmap imutável; eraseBallFromBackdrop desenha
+                    // sobre ele. Sem essa cópia a exceção descartava o print inteiro e
+                    // nenhum slider de óptica/escurecimento chegava ao painel.
+                    bitmap = if (decoded != null && !decoded.isMutable) {
+                        decoded.copy(Bitmap.Config.ARGB_8888, true).also { decoded.recycle() }
+                    } else {
+                        decoded
+                    }
                 }
                 file.delete()
                 // A própria bolinha aparece no screencap; substitui a região por um
@@ -863,6 +884,7 @@ class FloatingBallService : Service(), PanelController.Host {
 
     /** Remove a bolinha do print usando um trecho vizinho da mesma imagem. */
     private fun eraseBallFromBackdrop(bitmap: Bitmap) {
+        if (!bitmap.isMutable) return
         val real = realDisplaySize()
         if (real.x <= 0 || real.y <= 0) return
         val sx = bitmap.width.toFloat() / real.x
