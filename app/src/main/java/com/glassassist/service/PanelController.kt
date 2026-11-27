@@ -372,7 +372,7 @@ class PanelController(
 
     /** Separa R/B perto das bordas: o slider de refração passa a ter efeito real. */
     private fun applyRefraction(bitmap: Bitmap, strength: Float) {
-        val maxShift = 7f * (strength / 0.3f)
+        val maxShift = 12f * (strength / 0.3f)
         if (maxShift < 0.2f) return
         val w = bitmap.width
         val h = bitmap.height
