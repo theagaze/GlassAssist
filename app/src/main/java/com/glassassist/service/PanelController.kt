@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -18,10 +19,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.widget.GridLayout
+import android.widget.ImageButton
 import android.widget.ImageView
 import com.example.liquidglass.GlassAccessibilityMode
 import com.example.liquidglass.GlassMaterial
-import com.example.liquidglass.LiquidGlassFab
 import com.example.liquidglass.LiquidGlassView
 import com.glassassist.R
 import com.glassassist.core.Prefs
@@ -57,7 +58,7 @@ class PanelController(
         panelView.findViewById(R.id.pageZero),
         panelView.findViewById(R.id.pageOne)
     )
-    private val tiles = arrayOf(mutableListOf<LiquidGlassFab>(), mutableListOf<LiquidGlassFab>())
+    private val tiles = arrayOf(mutableListOf<ImageButton>(), mutableListOf<ImageButton>())
 
     private var page = prefs.page.coerceIn(0, 1)
     private var disposed = false
@@ -76,11 +77,9 @@ class PanelController(
         buildPages()
         installEdgePress()
         // A biblioteca recicla o bitmap devolvido: sempre uma cópia nova.
-        // Qualquer exceção aqui seria propagada para o onDraw e mataria o processo.
-        // Backdrop neutro apenas para a biblioteca não desenhar o fallback branco.
+        // Backdrop neutro apenas para a bolinha não desenhar o fallback branco.
         // Nenhuma captura de tela é feita: o fundo da janela continua ao vivo.
         ballGlass.setCustomBackdropCapture { _ -> safeTinyBitmap() }
-        panelGlass.setCustomBackdropCapture { _ -> safeTinyBitmap() }
         applyOptics()
         setPageImmediate(page)
     }
@@ -94,6 +93,13 @@ class PanelController(
 
     private fun dp(value: Int): Int = (value * service.resources.displayMetrics.density).toInt()
     private fun dp(value: Float): Float = value * service.resources.displayMetrics.density
+
+    /** Largura de uma página; nunca zero, mesmo antes do primeiro layout. */
+    private fun pageWidth(): Float {
+        val measured = pagesContainer.width.takeIf { it > 0 }
+            ?: panelView.width.takeIf { it > 0 }?.minus(dp(48))
+        return measured?.coerceAtLeast(dp(188))?.toFloat() ?: dp(228f)
+    }
 
     // ------------------------------------------------------------------ óptica
 
@@ -125,66 +131,21 @@ class PanelController(
             edgeSoftness = dp(0.6f)
             enableEdgeHighlight = true
             enableShadow = false
-            elasticity = 0.22f
-            enablePressEffect = true
-            pressScale = 0.92f
+            // Sem elasticidade: qualquer scale > 1 estourava a janela quadrada da bolinha.
+            elasticity = 0f
+            enablePressEffect = false
+            pressScale = 0.94f
             setGlassTint(Color.rgb(10, 16, 24), 0.20f)
             collectFrameStats = false
         }
 
-        // Painel: fundo ao vivo. A janela aplica o blur; aqui só ficam o tint,
-        // a borda especular, o escurecimento e a franja de refração da borda.
+        // Painel: desenho próprio leve. Desfoque e escurecimento são da janela.
         panelGlass.darkness = prefs.panelDarkness.coerceIn(0, 80) / 100f
         panelGlass.edgeRefraction = prefs.refractionStrength.coerceIn(0f, 0.3f)
         panelGlass.edgeIntensity = baseEdgeIntensity
-        panelGlass.apply {
-            material = GlassMaterial.CLEAR
-            accessibilityMode = GlassAccessibilityMode.FORCE_FULL
-            enableDynamicBackground = false
-            enableBackdropBlur = false
-            useShaderPipeline = false
-            useHardwareBlurWhenPossible = false
-            highQualityBlur = false
-            saturation = 100f
-            enableChromaticDispersion = false
-            enableChromaticAberration = false
-            enableAdaptiveTint = false
-            enableSensorHighlight = false
-            dispersionFactor = 1f
-            dispersionThickness = 64f
-            dispersionGain = 1f
-            dispersionDownsample = 1f
-            enableEdgeHighlight = true
-            edgeHighlightOpacity = prefs.edgeOpacity.toFloat()
-            edgeSoftness = dp(1.2f)
-            edgeHighlightBorderWidth = dp(1.2f)
-            enableShadow = false
-            refractionOutward = true
-            refractionNoFold = true
-            refractionFalloff = 2.1f
-            adaptiveLensScale = false
-            elasticity = 0.16f
-            enablePressEffect = false
-            cornerRadius = dp(prefs.panelCornerDp.toFloat())
-            bevelWidth = dp(20f)
-            refractionHeight = dp(64f)
-            blurAmount = 0f
-            dispersionStrength = 0f
-            setGlassTint(Color.rgb(10, 16, 24), 0.10f)
-            collectFrameStats = false
-        }
-        // Nenhuma captura e nenhum blur interno: o desfoque é só da janela (flag
-        // do WindowManager), controlado pelo serviço.
-        panelGlass.setCustomBackdropCapture { _ -> safeTinyBitmap() }
-        panelGlass.enableBackdropBlur = false
-        panelGlass.blurAmount = 0f
-
-        ballGlass.post {
-            if (!disposed) {
-                ballGlass.invalidate()
-                panelGlass.invalidate()
-            }
-        }
+        panelGlass.cornerRadius = dp(prefs.panelCornerDp.toFloat())
+        panelGlass.invalidate()
+        ballGlass.invalidate()
         } catch (t: Throwable) {
             // Nunca deixa uma exceção de propriedade da lib chegar ao onDraw.
             Log.e("GlassAssist", "Falha ao aplicar óptica", t)
@@ -383,12 +344,11 @@ class PanelController(
 
     private fun setPageImmediate(target: Int) {
         cancelPageAnimations()
+        val width = pageWidth()
         for (i in 0..1) {
             val view = pages[i]
             view.alpha = if (i == target) 1f else 0f
-            view.translationX = if (i == target) 0f else {
-                (if (i > target) 1 else -1) * pagesContainer.width.toFloat()
-            }
+            view.translationX = if (i == target) 0f else (if (i > target) 1 else -1) * width
             view.visibility = View.VISIBLE
             setChildrenEnabled(view, i == target)
         }
@@ -410,7 +370,7 @@ class PanelController(
     private fun animateToPage(target: Int, direction: Int) {
         val outgoing = pages[page]
         val incoming = pages[target]
-        val width = pagesContainer.width.toFloat().coerceAtLeast(1f)
+        val width = pageWidth()
         cancelPageAnimations()
         incoming.visibility = View.VISIBLE
         setChildrenEnabled(incoming, true)
@@ -431,7 +391,7 @@ class PanelController(
     /** Arraste lateral: as páginas acompanham o dedo antes de decidir o destino. */
     private fun handlePageDrag(dx: Float, finished: Boolean, switch: Boolean) {
         if (disposed) return
-        val width = pagesContainer.width.toFloat().coerceAtLeast(1f)
+        val width = pageWidth()
         if (!finished) {
             if (dragDirection == 0) {
                 dragDirection = if (dx < 0) 1 else -1
@@ -545,38 +505,28 @@ class PanelController(
         })
     )
 
-    private fun makeTile(tile: Tile): LiquidGlassFab = LiquidGlassFab(service).apply {
-        setIconResource(tile.icon)
-        setIconTint(Color.WHITE)
+    /**
+     * Botão leve: um círculo desenhado por GradientDrawable. Antes eram 12 views de
+     * vidro da biblioteca, cada uma com pipeline próprio — isso travava o painel.
+     */
+    private fun makeTile(tile: Tile): ImageButton = ImageButton(service).apply {
+        setImageResource(tile.icon)
+        imageTintList = ColorStateList.valueOf(Color.WHITE)
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        setPadding(dp(14), dp(14), dp(14), dp(14))
         minimumWidth = 0
         minimumHeight = 0
         contentDescription = tile.label
-        material = GlassMaterial.CLEAR
-        accessibilityMode = GlassAccessibilityMode.FORCE_FULL
-        enableDynamicBackground = false
-        enableBackdropBlur = false
-        useShaderPipeline = false
-        useHardwareBlurWhenPossible = false
-        enableChromaticDispersion = false
-        enableChromaticAberration = false
-        enableEdgeHighlight = true
-        edgeHighlightBorderWidth = dp(1f)
-        edgeHighlightOpacity = 74f
-        edgeSoftness = dp(0.5f)
-        enableShadow = false
-        cornerRadius = dp(999f)
-        bevelWidth = dp(10f)
-        refractionHeight = dp(28f)
-        elasticity = 0.22f
-        enablePressEffect = true
-        pressScale = 0.90f
-        setGlassTint(Color.BLACK, 0.22f)
-        setCustomBackdropCapture { _ -> safeTinyBitmap() }
+        isClickable = true
+        isFocusable = false
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.argb(46, 10, 16, 24))
+            setStroke(dp(1), Color.argb(150, 235, 245, 255))
+        }
+
         val repeatMs = tile.repeatMs
         if (repeatMs != null) {
-            // A animação é nossa, então desligamos a de pressão padrão da lib.
-            enablePressEffect = false
-            // Volume/brilho: primeiro passo no DOWN, depois repetição enquanto segura.
             val repeat = object : Runnable {
                 override fun run() {
                     if (disposed) return
@@ -584,7 +534,6 @@ class PanelController(
                     handler.postDelayed(this, repeatMs)
                 }
             }
-            isClickable = true
             setOnTouchListener { view, event ->
                 if (System.currentTimeMillis() < suppressClickUntil) return@setOnTouchListener true
                 when (event.actionMasked) {
@@ -604,7 +553,6 @@ class PanelController(
                         true
                     }
 
-                    // Consome também MOVE: a página não deve repassar o toque para a lib.
                     else -> true
                 }
             }
@@ -612,19 +560,25 @@ class PanelController(
             setOnClickListener { view ->
                 if (System.currentTimeMillis() < suppressClickUntil) return@setOnClickListener
                 view.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+                pressTile(view)
                 tile.action()
             }
         }
     }
 
-    private fun applyAppearance() {
-        for (index in 0..1) {
-            tiles[index].forEach { fab ->
-                fab.setIconTint(Color.WHITE)
-                fab.setGlassTint(Color.BLACK, 0.24f)
-                fab.invalidate()
+    /** Feedback de aperto sem depender de nenhum pipeline de vidro. */
+    private fun pressTile(view: View) {
+        view.animate().cancel()
+        view.animate()
+            .scaleX(0.9f).scaleY(0.9f)
+            .setDuration(70L)
+            .withEndAction {
+                view.animate().scaleX(1f).scaleY(1f).setDuration(130L).start()
             }
-        }
+            .start()
+    }
+
+    private fun applyAppearance() {
         val arrow = 0xD9FFFFFF.toInt()
         pagePrev.imageTintList = ColorStateList.valueOf(arrow)
         pageNext.imageTintList = ColorStateList.valueOf(arrow)

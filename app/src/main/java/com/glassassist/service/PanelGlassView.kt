@@ -9,24 +9,27 @@ import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.util.AttributeSet
-import com.example.liquidglass.LiquidGlassView
+import android.widget.FrameLayout
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Vidro do painel sem captura de tela: o fundo visto é sempre o fundo real,
- * composto ao vivo pela janela transparente.
+ * Vidro do painel desenhado diretamente, sem pipeline da biblioteca e sem captura.
  *
- * - o escurecimento é um retângulo preto semi-transparente desenhado atrás do vidro;
- * - o desfoque é aplicado pela própria janela (backgroundBlurRadius);
- * - a refração atua só na borda, nunca distorcendo o conteúdo atrás do painel;
- * - o brilho 3D da borda é desenhado por cima, com intensidade baixa.
+ * O morph não altera o tamanho desta view: [morphRect] é apenas a região desenhada
+ * (em coordenadas locais). Assim o GridLayout dos botões é medido uma única vez,
+ * no tamanho final, e a animação não faz requestLayout por frame.
  */
 class PanelGlassView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
-) : LiquidGlassView(context, attrs, defStyleAttr) {
+) : FrameLayout(context, attrs, defStyleAttr) {
+
+    init {
+        // FrameLayout sem background tem WILL_NOT_DRAW ligado por padrão.
+        setWillNotDraw(false)
+    }
 
     var darkness: Float = 0f
         set(value) {
@@ -58,26 +61,48 @@ class PanelGlassView @JvmOverloads constructor(
             invalidate()
         }
 
-    /**
-     * Fade dos efeitos de fundo junto com o morph. 0 = bolinha, 1 = painel aberto.
-     * Assim desfoque/escurecimento/brilho não aparecem só depois da animação.
-     */
+    /** Fade dos efeitos junto com o morph: 0 = bolinha, 1 = painel. */
     var effectsAlpha: Float = 1f
         set(value) {
             field = value.coerceIn(0f, 1f)
             invalidate()
         }
 
+    var cornerRadius: Float = 0f
+        set(value) {
+            val next = value.coerceAtLeast(1f)
+            if (field == next) return
+            field = next
+            invalidate()
+        }
+
+    /** Região visível do vidro em coordenadas locais; null = view inteira. */
+    var morphRect: RectF? = null
+        set(value) {
+            field = value?.let { RectF(it) }
+            invalidate()
+        }
+
+    /** Raio da região do morph; null = [cornerRadius]. */
+    var morphRadius: Float? = null
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    private val shapeRect = RectF()
     private val clipPath = Path()
     private val contentClipPath = Path()
-    private val morphFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val glowPath = Path()
+    private val glowRect = RectF()
+
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(30, 226, 242, 252)
         style = Paint.Style.FILL
     }
-    private val morphStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(96, 235, 245, 255)
         style = Paint.Style.STROKE
-        strokeWidth = 1.4f
     }
     private val darkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
@@ -93,8 +118,6 @@ class PanelGlassView @JvmOverloads constructor(
         color = Color.argb(120, 255, 255, 255)
     }
     private val fringePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
-    private val glowPath = Path()
-    private val glowRect = RectF()
 
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
 
@@ -104,68 +127,71 @@ class PanelGlassView @JvmOverloads constructor(
             edgeTouchX = w / 2f
             edgeTouchY = h / 2f
         }
-        morphStroke.strokeWidth = dp(1.2f)
+        if (cornerRadius <= 1f) cornerRadius = dp(34f)
+        strokePaint.strokeWidth = dp(1.2f)
+    }
+
+    private fun currentRect(): RectF {
+        val morph = morphRect
+        if (morph != null) {
+            shapeRect.set(morph)
+        } else {
+            shapeRect.set(0f, 0f, width.toFloat(), height.toFloat())
+        }
+        return shapeRect
+    }
+
+    private fun currentRadius(rect: RectF): Float {
+        val wanted = morphRadius ?: cornerRadius
+        return wanted.coerceAtMost(min(rect.width(), rect.height()) / 2f).coerceAtLeast(1f)
     }
 
     override fun onDraw(canvas: Canvas) {
-        // Desenho próprio o tempo todo: o pipeline pesado da lib não roda durante
-        // o morph, então não há queda de quadros nem "troca" de vidro no fim.
-        drawGlassShape(canvas)
-        drawDarkness(canvas)
+        val rect = currentRect()
+        if (rect.width() <= 0f || rect.height() <= 0f) return
+        val radius = currentRadius(rect)
+
+        clipPath.reset()
+        clipPath.addRoundRect(rect, radius, radius, Path.Direction.CW)
+        canvas.drawPath(clipPath, fillPaint)
+        canvas.drawPath(clipPath, strokePaint)
+
+        if (darkness > 0.001f && effectsAlpha > 0.001f) {
+            darkPaint.alpha = (darkness * 255f * effectsAlpha).toInt().coerceIn(0, 204)
+            canvas.drawPath(clipPath, darkPaint)
+        }
     }
 
     override fun dispatchDraw(canvas: Canvas) {
-        // Brilho da borda abaixo dos botões, sem recorte.
-        drawEdgeGlow(canvas)
+        val rect = currentRect()
+        if (rect.width() <= 0f || rect.height() <= 0f) {
+            super.dispatchDraw(canvas)
+            return
+        }
+        drawEdgeGlow(canvas, rect)
+
+        val radius = currentRadius(rect)
         val save = canvas.save()
-        // Recorta os filhos pela mesma borda arredondada: as páginas entram pela
-        // curva do vidro, nunca por um retângulo solto.
         contentClipPath.reset()
-        val r = cornerRadius.coerceAtMost(min(width, height) / 2f)
-        contentClipPath.addRoundRect(
-            0f, 0f, width.toFloat(), height.toFloat(), r, r, Path.Direction.CW
-        )
+        contentClipPath.addRoundRect(rect, radius, radius, Path.Direction.CW)
         canvas.clipPath(contentClipPath)
         super.dispatchDraw(canvas)
         canvas.restoreToCount(save)
     }
 
-    private fun drawGlassShape(canvas: Canvas) {
-        if (width <= 0 || height <= 0) return
-        val r = cornerRadius.coerceAtMost(min(width, height) / 2f)
-        clipPath.reset()
-        clipPath.addRoundRect(
-            0f, 0f, width.toFloat(), height.toFloat(), r, r, Path.Direction.CW
-        )
-        canvas.drawPath(clipPath, morphFill)
-        canvas.drawPath(clipPath, morphStroke)
-    }
-
-    /** Escurece ao vivo o que está atrás da janela — sem print e sem recorte. */
-    private fun drawDarkness(canvas: Canvas) {
-        if (darkness <= 0.001f || width <= 0 || height <= 0) return
-        val r = cornerRadius.coerceAtMost(min(width, height) / 2f)
-        clipPath.reset()
-        clipPath.addRoundRect(
-            0f, 0f, width.toFloat(), height.toFloat(), r, r, Path.Direction.CW
-        )
-        darkPaint.alpha = (darkness * 255f * effectsAlpha).toInt().coerceIn(0, 204)
-        canvas.drawPath(clipPath, darkPaint)
-    }
-
-    private fun drawEdgeGlow(canvas: Canvas) {
-        val a = edgeIntensity
-        if (a <= 0.001f || width <= 2 || height <= 2) return
+    private fun drawEdgeGlow(canvas: Canvas, rect: RectF) {
+        val a = edgeIntensity * effectsAlpha
+        if (a <= 0.001f || rect.width() <= 2f || rect.height() <= 2f) return
 
         val inset = dp(1f)
-        glowRect.set(inset, inset, width - inset, height - inset)
-        val r = cornerRadius.coerceAtMost(min(width, height) / 2f)
+        glowRect.set(rect.left + inset, rect.top + inset, rect.right - inset, rect.bottom - inset)
+        val radius = currentRadius(rect)
         glowPath.reset()
-        glowPath.addRoundRect(glowRect, r, r, Path.Direction.CW)
+        glowPath.addRoundRect(glowRect, radius, radius, Path.Direction.CW)
 
-        val gx = edgeTouchX.coerceIn(0f, width.toFloat())
-        val gy = edgeTouchY.coerceIn(0f, height.toFloat())
-        val radius = max(dp(44f), min(width, height) * 0.34f)
+        val gx = edgeTouchX.coerceIn(rect.left, rect.right)
+        val gy = edgeTouchY.coerceIn(rect.top, rect.bottom)
+        val glowRadius = max(dp(44f), min(rect.width(), rect.height()) * 0.34f)
 
         depthPaint.alpha = (60 * a).toInt().coerceIn(0, 255)
         depthPaint.strokeWidth = dp(3f)
@@ -176,7 +202,7 @@ class PanelGlassView @JvmOverloads constructor(
 
         glowPaint.strokeWidth = dp(1.8f + 1.2f * a)
         glowPaint.shader = RadialGradient(
-            gx, gy, radius,
+            gx, gy, glowRadius,
             intArrayOf(
                 Color.argb((170 * a).toInt().coerceIn(0, 255), 255, 255, 255),
                 Color.argb((100 * a).toInt().coerceIn(0, 255), 190, 225, 255),
@@ -186,14 +212,12 @@ class PanelGlassView @JvmOverloads constructor(
             Shader.TileMode.CLAMP
         )
         canvas.drawPath(glowPath, glowPaint)
+        glowPaint.shader = null
 
         hairlinePaint.alpha = (120 * a).toInt().coerceIn(0, 255)
         hairlinePaint.strokeWidth = dp(0.8f)
         canvas.drawPath(glowPath, hairlinePaint)
 
-        // Refração apenas como franja colorida na borda: o fundo continua intacto.
-        // O slider muda tanto o deslocamento quanto a intensidade, então 0 e 100
-        // têm diferença visível sem distorcer o conteúdo atrás da janela.
         val refraction = (edgeRefraction / 0.3f).coerceIn(0f, 1f)
         if (refraction > 0.001f) {
             val shift = dp(1.5f + 9f * refraction)

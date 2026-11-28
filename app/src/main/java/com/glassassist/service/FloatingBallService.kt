@@ -18,6 +18,7 @@ import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
@@ -34,7 +35,6 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
-import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.Toast
@@ -343,6 +343,13 @@ class FloatingBallService : Service(), PanelController.Host {
         screenHeight = bounds.height().coerceAtLeast(1)
     }
 
+    /** Nunca deixa a largura escolhida cortar colunas de botões. */
+    private fun computePanelWidth(): Int {
+        val neededForTiles = dp(prefs.tileSizeDp) * 3 + dp(44)
+        val chosen = maxOf(dp(prefs.panelSizeDp), neededForTiles)
+        return minOf(screenWidth - dp(20), chosen).coerceAtLeast(dp(188))
+    }
+
     private fun edgeMargins(): Pair<Int, Int> {
         val margin = dp(10)
         return margin to (screenWidth - ballSize - margin).coerceAtLeast(margin)
@@ -415,7 +422,7 @@ class FloatingBallService : Service(), PanelController.Host {
         if (!Settings.canDrawOverlays(this)) {
             throw SecurityException("Permissão de sobreposição não concedida. Conceda via root ou em Configurações.")
         }
-        panelWidth = minOf(screenWidth - dp(20), dp(prefs.panelSizeDp)).coerceAtLeast(dp(188))
+        panelWidth = computePanelWidth()
 
         // 1) camada de toque fora do painel
         val catcher = View(this).apply {
@@ -608,9 +615,11 @@ class FloatingBallService : Service(), PanelController.Host {
         // Durante o morph quem manda é applyMorphProgress(); fora dele o alvo é o rect final.
         if (!morphing) {
             val rect = computePanelRect()
+            panelRectNow = rect
             layoutPanel(rect)
             if (panelOpen) {
-                setGlassRect(rect)
+                panelGlass?.morphRect = null
+                panelGlass?.morphRadius = null
                 panelRoot?.post {
                     if (isRunning && panelOpen && !morphing) controller?.restorePage()
                 }
@@ -693,33 +702,27 @@ class FloatingBallService : Service(), PanelController.Host {
         }
     }
 
-    /**
-     * Muda só o tamanho/posição do vidro dentro da janela já existente. Nothing
-     * chama WindowManager.updateViewLayout() por frame, o que era a causa do travamento.
-     */
-    private fun setGlassRect(rect: GlassRect) {
-        val view = panelGlass ?: return
-        val finalRect = computePanelRect()
-        val lp = (view.layoutParams as? FrameLayout.LayoutParams)
-            ?: FrameLayout.LayoutParams(rect.w, rect.h).also { view.layoutParams = it }
-        lp.width = rect.w.coerceAtLeast(1)
-        lp.height = rect.h.coerceAtLeast(1)
-        lp.gravity = Gravity.TOP or Gravity.START
-        lp.leftMargin = rect.x - finalRect.x
-        lp.topMargin = rect.y - finalRect.y
-        view.setLayoutParams(lp)
-    }
+    /** Rect da bolinha em coordenadas locais do vidro do painel. */
+    private fun localRect(rect: GlassRect, anchor: GlassRect): RectF = RectF(
+        (rect.x - anchor.x).toFloat(),
+        (rect.y - anchor.y).toFloat(),
+        (rect.x + rect.w - anchor.x).toFloat(),
+        (rect.y + rect.h - anchor.y).toFloat()
+    )
 
-    /** Estado recolhido: o próprio vidro do painel tem o tamanho e o canto da bolinha. */
+    /** Estado recolhido: só a região desenhada vira bolinha; a view não é redimensionada. */
     private fun setCollapsedTransform() {
         val view = panelGlass ?: return
+        val anchor = panelRectNow.takeIf { it.w > 0 && it.h > 0 }
+            ?: computePanelRect().also { panelRectNow = it }
         view.scaleX = 1f
         view.scaleY = 1f
         view.alpha = 1f
-        view.cornerRadius = (ballSize / 2f).coerceAtLeast(1f)
+        view.cornerRadius = dp(prefs.panelCornerDp.toFloat()).coerceAtLeast(1f)
+        view.morphRect = localRect(ballRect(), anchor)
+        view.morphRadius = (ballSize / 2f).coerceAtLeast(1f)
         view.effectsAlpha = 0f
         panelRoot?.findViewById<View>(R.id.panelContent)?.alpha = 0f
-        setGlassRect(ballRect())
     }
 
     private fun parkPanel() {
@@ -761,7 +764,7 @@ class FloatingBallService : Service(), PanelController.Host {
 
     private fun scheduleMorphWatchdog() {
         handler.removeCallbacks(morphWatchdog)
-        handler.postDelayed(morphWatchdog, 1600L)
+        handler.postDelayed(morphWatchdog, 2400L)
     }
 
     // ------------------------------------------------------------------ morph
@@ -790,56 +793,57 @@ class FloatingBallService : Service(), PanelController.Host {
     private fun lerp(a: Int, b: Int, t: Float): Int = (a + (b - a) * t).toInt()
 
     /**
-     * Uma única superfície: o vidro filho cresce do tamanho da bolinha até o painel.
-     * A janela do WindowManager fica parada no retângulo final — nada de
-     * updateViewLayout() por frame, que causava travamento e flashes brancos.
+     * Uma única superfície: a janela do painel fica no retângulo final e apenas a
+     * região desenhada pelo vidro vai da bolinha até o painel. Nenhuma view muda de
+     * tamanho, então o GridLayout dos botões não é medido de novo por frame.
      */
     private fun applyMorphProgress(raw: Float) {
         val glass = panelGlass ?: return
-        // Pequeno overshoot só na geometria; alfas e efeitos ficam em 0..1.
-        val e = raw.coerceIn(-0.02f, 1.02f)
         val s = raw.coerceIn(0f, 1f)
+        val anchor = panelRectNow.takeIf { it.w > 0 && it.h > 0 }
+            ?: computePanelRect().also { panelRectNow = it }
         val rect = GlassRect(
-            lerp(morphStartRect.x, morphEndRect.x, e),
-            lerp(morphStartRect.y, morphEndRect.y, e),
-            lerp(morphStartRect.w, morphEndRect.w, e).coerceAtLeast(1),
-            lerp(morphStartRect.h, morphEndRect.h, e).coerceAtLeast(1)
+            lerp(morphStartRect.x, morphEndRect.x, s),
+            lerp(morphStartRect.y, morphEndRect.y, s),
+            lerp(morphStartRect.w, morphEndRect.w, s).coerceAtLeast(1),
+            lerp(morphStartRect.h, morphEndRect.h, s).coerceAtLeast(1)
         )
-        setGlassRect(rect)
+        glass.morphRect = localRect(rect, anchor)
 
         val ballRadius = (ballSize / 2f).coerceAtLeast(1f)
-        val panelRadius = dp(prefs.panelCornerDp.toFloat())
+        val panelRadius = dp(prefs.panelCornerDp.toFloat()).coerceAtLeast(1f)
         glass.scaleX = 1f
         glass.scaleY = 1f
         glass.alpha = 1f
-        glass.cornerRadius = (ballRadius + (panelRadius - ballRadius) * s).coerceAtLeast(1f)
+        glass.cornerRadius = panelRadius
+        glass.morphRadius = ballRadius + (panelRadius - ballRadius) * s
         glass.effectsAlpha = s
         panelRoot?.findViewById<View>(R.id.panelContent)?.alpha =
-            ((s - 0.34f) / 0.66f).coerceIn(0f, 1f)
+            ((s - 0.45f) / 0.55f).coerceIn(0f, 1f)
 
-        // A janela da bolinha só carrega a logo; o vidro visível é o próprio painel.
+        // A janela da bolinha só carrega a logo; o vidro visível é o do painel.
         ballGlass?.alpha = 0f
-        val logoAlpha = ((0.38f - s) / 0.38f).coerceIn(0f, 1f)
+        val logoAlpha = ((0.32f - s) / 0.32f).coerceIn(0f, 1f)
         ballLogo?.alpha = logoAlpha
-        val logoScale = 1f - 0.14f * s
+        val logoScale = 1f - 0.12f * s
         ballLogo?.scaleX = logoScale
         ballLogo?.scaleY = logoScale
     }
 
-    /** ValueAnimator com overshoot leve: fluido e elástico sem deformar o vidro. */
+    /** Animação curta e sem overshoot: entrada/saída previsíveis, sem saltos. */
     private fun startMorph(target: Float, onEnd: () -> Unit) {
         morphAnimator?.cancel()
         val from = morphProgress.value.coerceIn(0f, 1f)
         morphProgress.value = from
         val opening = target > from
-        // Progresso é sempre absoluto: 0 = bolinha, 1 = painel. Assim uma reversão
-        // no meio da animação retoma exatamente o quadro atual, sem salto.
+        // Progresso absoluto: 0 = bolinha, 1 = painel. Reverter no meio retoma o quadro atual.
         morphStartRect = ballRect()
-        morphEndRect = computePanelRect()
+        morphEndRect = panelRectNow.takeIf { it.w > 0 && it.h > 0 }
+            ?: computePanelRect().also { panelRectNow = it }
         applyMorphProgress(from)
         val anim = ValueAnimator.ofFloat(from, target).apply {
-            duration = if (opening) 430L else 380L
-            interpolator = OvershootInterpolator(0.5f)
+            duration = if (opening) 300L else 250L
+            interpolator = DecelerateInterpolator(1.2f)
             addUpdateListener { animation ->
                 val value = animation.animatedValue as Float
                 morphProgress.value = value
@@ -875,6 +879,14 @@ class FloatingBallService : Service(), PanelController.Host {
         scheduleMorphWatchdog()
 
         controller?.applyOptics()
+        // Janela fixa no retângulo final: a animação só mexe na região desenhada.
+        val panelRect = computePanelRect()
+        panelRectNow = panelRect
+        layoutPanel(panelRect)
+        // Corrige a paginação antes de o conteúdo começar a aparecer no morph.
+        panelRoot?.post {
+            if (isRunning && panelOpen && !closing) controller?.restorePage()
+        }
 
         ballGlass?.animate()?.cancel()
         ballLogo?.animate()?.cancel()
@@ -896,10 +908,10 @@ class FloatingBallService : Service(), PanelController.Host {
         cancelMorphAnimators()
         morphProgress.value = 1f
         applyMorphProgress(1f)
-        setGlassRect(computePanelRect())
-        layoutPanel(computePanelRect())
-        // Espera o layout com a largura final antes de reposicionar as páginas;
-        // senão a página inativa fica com translationX da bolinha e faltam botões.
+        panelGlass?.morphRect = null
+        panelGlass?.morphRadius = null
+        // A view já está no tamanho final desde a instalação; só precisa reposicionar
+        // as páginas depois de um frame, para pagesContainer.width estar correto.
         panelRoot?.post {
             if (isRunning && panelOpen && !morphing && !closing) controller?.restorePage()
         }
@@ -962,7 +974,9 @@ class FloatingBallService : Service(), PanelController.Host {
     private fun cancelToParkedState() {
         cancelMorphAnimators()
         morphProgress.value = 0f
+        applyMorphProgress(0f)
         parkPanel()
+        // A bolinha aparece exatamente onde o morph terminou.
         restoreBallWindow()
         ballView?.alpha = 1f
         ballView?.visibility = View.GONE
@@ -989,46 +1003,22 @@ class FloatingBallService : Service(), PanelController.Host {
         ballLogo?.animate()?.cancel()
         if (pressed) {
             view.animate()
-                .scaleX(0.93f).scaleY(0.93f)
-                .setDuration(80L)
-                .setInterpolator(DecelerateInterpolator(1.6f))
+                .scaleX(0.94f).scaleY(0.94f)
+                .setDuration(70L)
+                .setInterpolator(DecelerateInterpolator(1.4f))
                 .start()
-            ballLogo?.animate()?.scaleX(0.93f)?.scaleY(0.93f)?.setDuration(80L)?.start()
-            view.edgeHighlightOpacity = 120f
+            ballLogo?.animate()?.scaleX(0.94f)?.scaleY(0.94f)?.setDuration(70L)?.start()
+            view.edgeHighlightOpacity = 110f
         } else {
             view.animate()
                 .scaleX(1f).scaleY(1f)
-                .setDuration(190L)
-                .setInterpolator(OvershootInterpolator(0.45f))
+                .setDuration(160L)
+                .setInterpolator(DecelerateInterpolator(1.2f))
                 .start()
-            ballLogo?.animate()?.scaleX(1f)?.scaleY(1f)
-                ?.setDuration(190L)?.setInterpolator(OvershootInterpolator(0.45f))?.start()
+            ballLogo?.animate()?.scaleX(1f)?.scaleY(1f)?.setDuration(160L)?.start()
             view.edgeHighlightOpacity = prefs.edgeOpacity.toFloat().coerceIn(30f, 100f)
         }
         view.invalidate()
-    }
-
-    /**
-     * Estica a bolinha para o lado para onde o dedo está puxando e espreme o eixo
-     * perpendicular. Vale para volume (vertical) e para arraste (horizontal).
-     */
-    private fun applyGestureDeform(dx: Float, dy: Float, horizontal: Boolean) {
-        val view = ballGlass ?: return
-        val amount = if (horizontal) abs(dx) else abs(dy)
-        val t = (amount / dp(96f).toFloat()).coerceIn(0f, 1f)
-        val along = 1f + 0.18f * t
-        val across = 1f - 0.08f * t
-        if (horizontal) {
-            view.pivotX = if (dx >= 0f) 0f else view.width.toFloat()
-            view.pivotY = view.height / 2f
-            view.scaleX = along
-            view.scaleY = across
-        } else {
-            view.pivotX = view.width / 2f
-            view.pivotY = if (dy >= 0f) 0f else view.height.toFloat()
-            view.scaleX = across
-            view.scaleY = along
-        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -1082,7 +1072,6 @@ class FloatingBallService : Service(), PanelController.Host {
                 }
                 when (mode) {
                     Mode.VOLUME -> {
-                        applyGestureDeform(0f, dyTotal, horizontal = false)
                         volumeAccumulator += lastY - event.rawY
                         lastY = event.rawY
                         val step = prefs.volumeStepPx.toFloat().coerceAtLeast(8f)
@@ -1100,10 +1089,6 @@ class FloatingBallService : Service(), PanelController.Host {
                         lastDragDy = event.rawY - lastY
                         lastX = event.rawX
                         lastY = event.rawY
-                        applyGestureDeform(
-                            dxTotal, dyTotal,
-                            horizontal = abs(dxTotal) >= abs(dyTotal)
-                        )
                         val rawX = dragBaseX + dxTotal.toInt()
                         val rawY = dragBaseY + dyTotal.toInt()
                         applyDismissMagnet(lp, rawX, rawY)
@@ -1206,11 +1191,10 @@ class FloatingBallService : Service(), PanelController.Host {
         view?.let { updateDismissPull(it, strength) }
     }
 
-    /** Enquanto o dedo segura perto, o X é puxado para baixo sem perder o formato. */
+    /** Enquanto o dedo segura perto, o X só é puxado para baixo; nunca escala > 1. */
     private fun updateDismissPull(view: View, strength: Float) {
-        val scale = 1f + 0.12f * strength
-        view.scaleX = scale
-        view.scaleY = scale
+        view.scaleX = 1f
+        view.scaleY = 1f
         view.translationY = dp(8f).toFloat() * strength
         view.alpha = (0.92f + 0.08f * strength).coerceAtMost(1f)
     }
@@ -1518,7 +1502,7 @@ class FloatingBallService : Service(), PanelController.Host {
             }
             restoreBallWindow()
         }
-        panelWidth = minOf(screenWidth - dp(20), dp(prefs.panelSizeDp)).coerceAtLeast(dp(188))
+        panelWidth = computePanelWidth()
         measurePanelContent()
         controller?.applyOptics()
         updatePanelPosition()
@@ -1552,7 +1536,7 @@ class FloatingBallService : Service(), PanelController.Host {
             restoreBallWindow()
         }
 
-        panelWidth = minOf(screenWidth - dp(20), dp(prefs.panelSizeDp)).coerceAtLeast(dp(188))
+        panelWidth = computePanelWidth()
         measurePanelContent()
         controller?.applyOptics()
         updatePanelPosition()
