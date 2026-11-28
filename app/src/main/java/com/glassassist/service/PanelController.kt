@@ -598,7 +598,8 @@ class PanelController(
                         true
                     }
 
-                    else -> false
+                    // Consome também MOVE: a página não deve repassar o toque para a lib.
+                    else -> true
                 }
             }
         } else {

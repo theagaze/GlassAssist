@@ -113,14 +113,16 @@ class PanelGlassView @JvmOverloads constructor(
     }
 
     override fun onDraw(canvas: Canvas) {
-        drawDarkness(canvas)
+        // Vidro primeiro; o véu escuro e o fosco por cima, para não serem diluídos.
         super.onDraw(canvas)
+        drawDarkness(canvas)
         drawFrost(canvas)
     }
 
     override fun dispatchDraw(canvas: Canvas) {
-        super.dispatchDraw(canvas)
+        // Brilho da borda abaixo dos botões, para não tingir os ícones.
         drawEdgeGlow(canvas)
+        super.dispatchDraw(canvas)
     }
 
     /** Escurece ao vivo o que está atrás da janela — sem print e sem recorte. */
