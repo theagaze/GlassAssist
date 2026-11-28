@@ -69,8 +69,8 @@ object SystemActions {
      * Snapshot usado como backdrop do painel. Usa o shell `capture`, separado do
      * shell de keyevents: um `screencap` lento nunca bloqueia `send()`.
      */
-    fun captureScreenTo(file: File): RootShellManager.ShellResult =
-        RootShellManager.executeCapture("screencap -p '${file.absolutePath}'", 5000)
+    fun captureScreenTo(file: File, timeoutMs: Long = 5000): RootShellManager.ShellResult =
+        RootShellManager.executeCapture("screencap -p '${file.absolutePath}'", timeoutMs)
 
     /** Captura limpa salva na galeria quando o keyevent 120 não está disponível. */
     fun captureToGallery(context: Context): Pair<Boolean, String> {

@@ -233,12 +233,21 @@
                     android:text="Visual"
                     android:textColor="#FFE2E8F0"
                     android:textSize="12sp" />
+
+                <RadioButton
+                    android:id="@+id/rbBlurCapture"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Captura"
+                    android:textColor="#FFE2E8F0"
+                    android:textSize="10sp" />
             </RadioGroup>
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Auto usa o blur do sistema e cai para vidro fosco se ele estiver desligado. Visual é o mais econômico."
+                android:text="Auto: nativo com fallback. Visual: fosco leve e barato. Captura: uma foto do fundo por abertura, reduzida e desfocada — realista sem capturar toda hora."
                 android:textColor="#FF93A4B8"
                 android:textSize="11sp" />
 
@@ -355,10 +364,17 @@
                 android:progress="70" />
 
             <Button
-                android:id="@+id/btnApply"
+                android:id="@+id/btnResetDefaults"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="14dp"
+                android:text="Redefinir configurações padrão" />
+
+            <Button
+                android:id="@+id/btnApply"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
                 android:text="Salvar e aplicar" />
         </LinearLayout>
 

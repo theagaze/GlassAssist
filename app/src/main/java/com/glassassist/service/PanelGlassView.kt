@@ -101,9 +101,9 @@ class PanelGlassView @JvmOverloads constructor(
             frostGradient = android.graphics.LinearGradient(
                 0f, 0f, 0f, h.toFloat(),
                 intArrayOf(
-                    Color.argb(46, 224, 239, 250),
-                    Color.argb(14, 206, 224, 238),
-                    Color.argb(30, 216, 233, 246)
+                    Color.argb(26, 226, 242, 252),
+                    Color.argb(6, 208, 226, 240),
+                    Color.argb(16, 218, 235, 248)
                 ),
                 floatArrayOf(0f, 0.52f, 1f),
                 Shader.TileMode.CLAMP

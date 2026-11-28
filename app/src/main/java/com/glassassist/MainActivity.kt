@@ -46,6 +46,12 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btnRoot).setOnClickListener {
             verifyAndProvision(showDialog = true, startAfter = false)
         }
+        findViewById<Button>(R.id.btnResetDefaults).setOnClickListener {
+            prefs.resetDefaults()
+            syncControls()
+            FloatingBallService.refreshSettings()
+            Toast.makeText(this, "Configurações padrão restauradas", Toast.LENGTH_SHORT).show()
+        }
         findViewById<Button>(R.id.btnApply).setOnClickListener {
             FloatingBallService.refreshSettings()
             Toast.makeText(this, "Preferências salvas e aplicadas", Toast.LENGTH_SHORT).show()
@@ -163,6 +169,7 @@ class MainActivity : Activity() {
             prefs.blurMode = when (checkedId) {
                 R.id.rbBlurNative -> Prefs.BLUR_MODE_NATIVE
                 R.id.rbBlurVisual -> Prefs.BLUR_MODE_VISUAL
+                R.id.rbBlurCapture -> Prefs.BLUR_MODE_CAPTURE
                 else -> Prefs.BLUR_MODE_AUTO
             }
         }
@@ -215,6 +222,7 @@ class MainActivity : Activity() {
             when (prefs.blurMode) {
                 Prefs.BLUR_MODE_NATIVE -> R.id.rbBlurNative
                 Prefs.BLUR_MODE_VISUAL -> R.id.rbBlurVisual
+                Prefs.BLUR_MODE_CAPTURE -> R.id.rbBlurCapture
                 else -> R.id.rbBlurAuto
             }
         )

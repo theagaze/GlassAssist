@@ -33,12 +33,12 @@ class Prefs private constructor(context: Context) {
         set(value) = sp.edit().putFloat(KEY_REFRACTION, value.coerceIn(0f, 0.3f)).apply()
 
     /**
-     * 0 = tenta o blur nativo e usa vidro fosco se o sistema desligar o blur;
-     * 1 = somente nativo; 2 = somente vidro fosco (mais barato).
+     * 0 = nativo com fallback fosco; 1 = só nativo; 2 = só fosco (barato);
+     * 3 = captura única do fundo, reduzida e desfocada no painel.
      */
     var blurMode: Int
         get() = sp.getInt(KEY_BLUR_MODE, BLUR_MODE_AUTO)
-        set(value) = sp.edit().putInt(KEY_BLUR_MODE, value.coerceIn(0, 2)).apply()
+        set(value) = sp.edit().putInt(KEY_BLUR_MODE, value.coerceIn(0, 3)).apply()
 
     var volumeStepPx: Int
         get() = sp.getInt(KEY_VOLUME_STEP, 34)
@@ -130,10 +130,36 @@ class Prefs private constructor(context: Context) {
         sp.edit().remove(KEY_BALL_CORNER).apply()
     }
 
+    /** Volta todas as preferências visuais ao estado de fábrica, mantendo root/serviço. */
+    fun resetDefaults() {
+        sp.edit()
+            .remove(KEY_BALL_SIZE)
+            .remove(KEY_INACTIVE_ALPHA)
+            .remove(KEY_BLUR)
+            .remove(KEY_REFRACTION)
+            .putFloat(KEY_REFRACTION, DEFAULT_REFRACTION)
+            .putBoolean(KEY_REFRACTION_MIGRATED, true)
+            .remove(KEY_BLUR_MODE)
+            .remove(KEY_VOLUME_STEP)
+            .remove(KEY_PANEL_SIZE)
+            .remove(KEY_TILE_SIZE)
+            .remove(KEY_PANEL_CORNER)
+            .remove(KEY_EDGE_OPACITY)
+            .remove(KEY_PANEL_DARKNESS)
+            .remove(KEY_REPEAT_DELAY)
+            .remove(KEY_BALL_X)
+            .remove(KEY_BALL_Y)
+            .remove(KEY_BALL_EDGE)
+            .remove(KEY_BALL_CORNER)
+            .remove(KEY_PAGE)
+            .apply()
+    }
+
     companion object {
         const val BLUR_MODE_AUTO = 0
         const val BLUR_MODE_NATIVE = 1
         const val BLUR_MODE_VISUAL = 2
+        const val BLUR_MODE_CAPTURE = 3
 
         private const val DEFAULT_REFRACTION = 0.05f
 
