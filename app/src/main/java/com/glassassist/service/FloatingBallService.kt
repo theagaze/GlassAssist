@@ -5,6 +5,7 @@ import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.AlarmManager
+import android.app.Dialog
 import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
@@ -33,6 +34,8 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.Window
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
@@ -59,6 +62,13 @@ data class GlassRect(val x: Int, val y: Int, val w: Int, val h: Int) {
     val centerX: Int get() = x + w / 2
     val centerY: Int get() = y + h / 2
 }
+
+/** Janela transparente que só existe para ancorar o blur nativo nos limites do vidro. */
+private class BlurSurface(
+    val dialog: Dialog,
+    val window: Window,
+    val background: GradientDrawable
+)
 
 /**
  * Janelas de overlay: catcher, painel, bolinha e o X inferior.
@@ -89,6 +99,10 @@ class FloatingBallService : Service(), PanelController.Host {
 
     private var screenWidth = 0
     private var screenHeight = 0
+    private var safeLeft = 0
+    private var safeTop = 0
+    private var safeRight = 0
+    private var safeBottom = 0
     private var ballSize = 0
     private var panelWidth = 0
     private var panelHeight = 0
@@ -100,6 +114,11 @@ class FloatingBallService : Service(), PanelController.Host {
     private var morphing = false
     private var closing = false
 
+    // Tokens impedem que o fim de uma animação antiga sobrescreva uma reabertura.
+    private var closeFadeToken = 0
+    private var dismissActionToken = 0
+    private var screenshotToken = 0
+
     /** Um único progresso comanda geometria, canto, conteúdo e efeitos. */
     private val morphProgress = FloatValueHolder(0f)
     private var morphAnimator: ValueAnimator? = null
@@ -108,6 +127,25 @@ class FloatingBallService : Service(), PanelController.Host {
 
     private val snapSprings = mutableListOf<SpringAnimation>()
     private var snapRemaining = 0
+    private var dismissAnimator: ValueAnimator? = null
+
+    /**
+     * X e Y são atualizados juntos, no próximo frame. Evita dois updateViewLayout
+     * por frame durante molas e deduplica ACTION_MOVE que cai no mesmo pixel.
+     */
+    private var ballLayoutPending = false
+    private val ballLayoutRunnable = Runnable {
+        ballLayoutPending = false
+        val view = ballView ?: return@Runnable
+        val lp = ballParams ?: return@Runnable
+        lp.x = ballX
+        lp.y = ballY
+        try {
+            wm.updateViewLayout(view, lp)
+        } catch (_: IllegalArgumentException) {
+        }
+        applyBallWindowBlur()
+    }
 
     /** Move a janela da bolinha sem alterar o tamanho durante o snap. */
     private val ballXProperty = object : FloatPropertyCompat<View>("ballX") {
@@ -115,13 +153,10 @@ class FloatingBallService : Service(), PanelController.Host {
 
         override fun setValue(view: View?, value: Float) {
             val target = view ?: ballView ?: return
-            ballX = value.toInt().coerceIn(0, (screenWidth - ballSize).coerceAtLeast(0))
-            val lp = ballParams ?: return
-            lp.x = ballX
-            try {
-                wm.updateViewLayout(target, lp)
-            } catch (_: IllegalArgumentException) {
-            }
+            val min = safeLeft.coerceAtMost(screenWidth - ballSize)
+            val max = (screenWidth - safeRight - ballSize).coerceAtLeast(min)
+            ballX = value.toInt().coerceIn(min, max)
+            scheduleBallLayout(target)
         }
     }
 
@@ -130,14 +165,22 @@ class FloatingBallService : Service(), PanelController.Host {
 
         override fun setValue(view: View?, value: Float) {
             val target = view ?: ballView ?: return
-            ballY = value.toInt().coerceIn(0, (screenHeight - ballSize).coerceAtLeast(0))
-            val lp = ballParams ?: return
-            lp.y = ballY
-            try {
-                wm.updateViewLayout(target, lp)
-            } catch (_: IllegalArgumentException) {
-            }
+            val min = safeTop.coerceAtMost(screenHeight - ballSize)
+            val max = (screenHeight - safeBottom - ballSize).coerceAtLeast(min)
+            ballY = value.toInt().coerceIn(min, max)
+            scheduleBallLayout(target)
         }
+    }
+
+    private fun scheduleBallLayout(view: View? = ballView) {
+        if (view == null || ballLayoutPending) return
+        ballLayoutPending = true
+        view.postOnAnimation(ballLayoutRunnable)
+    }
+
+    private fun cancelPendingBallLayout() {
+        ballLayoutPending = false
+        ballView?.removeCallbacks(ballLayoutRunnable)
     }
 
     private enum class Mode { NONE, DRAG, VOLUME }
@@ -169,7 +212,17 @@ class FloatingBallService : Service(), PanelController.Host {
     private var dismissCenterY = 0
     private var magnetActive = false
 
-    private val configRunnable = Runnable { handleConfigurationChanged() }
+    private val configRetryRunnable = Runnable {
+        if (isRunning) handleConfigurationChanged()
+    }
+
+    private val configRunnable = Runnable {
+        if (!isRunning) return@Runnable
+        handleConfigurationChanged()
+        // Alguns devices publicam os novos insets só depois do segundo frame.
+        handler.removeCallbacks(configRetryRunnable)
+        handler.postDelayed(configRetryRunnable, 180L)
+    }
 
     /** Lista em memória: ao reiniciar o serviço/app ela volta a ficar vazia. */
     private val blockedApps = mutableSetOf<String>()
@@ -207,7 +260,10 @@ class FloatingBallService : Service(), PanelController.Host {
     }
 
     private var blurSupported = false
+    private var blurSurfaceFailed = false
     private var blurListener: Consumer<Boolean>? = null
+    private var panelBlur: BlurSurface? = null
+    private var ballBlur: BlurSurface? = null
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -216,6 +272,7 @@ class FloatingBallService : Service(), PanelController.Host {
                 Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> showBallIfUnlocked()
                 Intent.ACTION_CONFIGURATION_CHANGED -> {
                     handler.removeCallbacks(configRunnable)
+                    handler.removeCallbacks(configRetryRunnable)
                     handler.postDelayed(configRunnable, 160L)
                 }
             }
@@ -238,6 +295,8 @@ class FloatingBallService : Service(), PanelController.Host {
         private const val HOLD_MS = 320L
         private const val ACTION_SHOW = "com.glassassist.SHOW_OVERLAY"
         private const val OVERSCAN_DP = 24
+        private const val OFFSCREEN_X = -100000
+        private const val OFFSCREEN_Y = -100000
         private const val APP_MONITOR_MS = 2800L
         private const val FOREGROUND_LOOKUP =
             "dumpsys window | grep -m 1 mCurrentFocus; " +
@@ -283,10 +342,11 @@ class FloatingBallService : Service(), PanelController.Host {
 
         refreshMetrics()
         ballSize = dp(prefs.ballSizeDp)
+        val (minX, maxX) = edgeMargins()
         ballX = if (prefs.ballX == Int.MIN_VALUE) {
-            screenWidth - ballSize - dp(12)
+            maxX
         } else {
-            prefs.ballX.coerceIn(0, (screenWidth - ballSize).coerceAtLeast(0))
+            prefs.ballX.coerceIn(minX, maxX)
         }
         // Ao iniciar, a bolinha sempre volta para o topo — nunca herda a posição
         // em que o X ficou na sessão anterior.
@@ -333,31 +393,50 @@ class FloatingBallService : Service(), PanelController.Host {
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
 
     private fun refreshMetrics() {
-        val bounds = try {
-            wm.currentWindowMetrics.bounds
+        val metrics = try {
+            wm.currentWindowMetrics
         } catch (_: Throwable) {
+            null
+        }
+        val bounds = metrics?.bounds ?: run {
             val m = resources.displayMetrics
             android.graphics.Rect(0, 0, m.widthPixels, m.heightPixels)
         }
         screenWidth = bounds.width().coerceAtLeast(1)
         screenHeight = bounds.height().coerceAtLeast(1)
+
+        // As janelas usam FLAG_LAYOUT_IN_SCREEN: as margens precisam respeitar
+        // status/nav bar, senão a bolinha nasce em cima dos sistemas da tela.
+        val insets = try {
+            metrics?.windowInsets?.getInsets(
+                WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
+            )
+        } catch (_: Throwable) {
+            null
+        }
+        safeLeft = insets?.left ?: 0
+        safeTop = insets?.top ?: 0
+        safeRight = insets?.right ?: 0
+        safeBottom = insets?.bottom ?: 0
     }
 
     /** Nunca deixa a largura escolhida cortar colunas de botões. */
     private fun computePanelWidth(): Int {
         val neededForTiles = dp(prefs.tileSizeDp) * 3 + dp(44)
         val chosen = maxOf(dp(prefs.panelSizeDp), neededForTiles)
-        return minOf(screenWidth - dp(20), chosen).coerceAtLeast(dp(188))
+        return minOf(screenWidth - safeLeft - safeRight - dp(20), chosen).coerceAtLeast(dp(188))
     }
 
     private fun edgeMargins(): Pair<Int, Int> {
         val margin = dp(10)
-        return margin to (screenWidth - ballSize - margin).coerceAtLeast(margin)
+        val minX = safeLeft + margin
+        return minX to (screenWidth - safeRight - ballSize - margin).coerceAtLeast(minX)
     }
 
     private fun verticalMargins(): Pair<Int, Int> {
         val margin = dp(10)
-        return margin to (screenHeight - ballSize - margin).coerceAtLeast(margin)
+        val minY = safeTop + margin
+        return minY to (screenHeight - safeBottom - ballSize - margin).coerceAtLeast(minY)
     }
 
     /** 0=superior esquerda, 1=superior direita, 2=inferior esquerda, 3=inferior direita. */
@@ -445,6 +524,9 @@ class FloatingBallService : Service(), PanelController.Host {
         catcherParams = catcherLp
         wm.addView(catcher, catcherLp)
 
+        // O blur é uma janela transparente abaixo do conteúdo, nunca um filtro da tela toda.
+        panelBlur = createBlurSurface(oval = false)
+
         // 2) painel com overscan: a superfície é maior que o vidro visível.
         val overscan = dp(OVERSCAN_DP)
         val panel = LayoutInflater.from(this).inflate(R.layout.overlay_panel, null)
@@ -478,13 +560,18 @@ class FloatingBallService : Service(), PanelController.Host {
         wm.addView(panel, panelLp)
         parkPanel()
 
+        ballBlur = createBlurSurface(oval = true)
+
         // 3) bolinha por cima do painel
+        // Mesmo sistema de coordenadas do painel: sem FLAG_LAYOUT_IN_SCREEN a bolinha
+        // aparecia alguns pixels abaixo do ponto em que o morph terminava.
         // A lib não pode consumir o DOWN, senão MOVE/UP nunca chegam aqui.
         ballGlass?.setOnTouchListener { v, event -> handleBallTouch(v, event) }
         val ballLp = WindowManager.LayoutParams(
             ballSize, ballSize, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
@@ -549,8 +636,8 @@ class FloatingBallService : Service(), PanelController.Host {
         val lp = dismissParams ?: return
         val view = dismissView ?: return
         val size = lp.width.coerceAtLeast(1)
-        lp.x = (screenWidth - size) / 2
-        lp.y = (screenHeight - size - dp(34)).coerceAtLeast(0)
+        lp.x = (safeLeft + screenWidth - safeRight - size) / 2
+        lp.y = (screenHeight - safeBottom - size - dp(34)).coerceAtLeast(safeTop)
         try {
             wm.updateViewLayout(view, lp)
         } catch (_: IllegalArgumentException) {
@@ -583,13 +670,15 @@ class FloatingBallService : Service(), PanelController.Host {
 
     private fun computePanelRect(): GlassRect {
         val margin = dp(8)
-        val maxX = (screenWidth - panelWidth - margin).coerceAtLeast(margin)
-        val maxY = (screenHeight - panelHeight - margin).coerceAtLeast(margin)
+        val minX = safeLeft + margin
+        val minY = safeTop + margin
+        val maxX = (screenWidth - safeRight - panelWidth - margin).coerceAtLeast(minX)
+        val maxY = (screenHeight - safeBottom - panelHeight - margin).coerceAtLeast(minY)
         val x = ballRect().centerX - panelWidth / 2
         val y = ballRect().centerY - panelHeight / 2
         return GlassRect(
-            x.coerceIn(margin, maxX),
-            y.coerceIn(margin, maxY),
+            x.coerceIn(minX, maxX),
+            y.coerceIn(minY, maxY),
             panelWidth,
             panelHeight
         )
@@ -629,55 +718,117 @@ class FloatingBallService : Service(), PanelController.Host {
     }
 
     /**
-     * Blur nativo do painel: intensidade própria (1..100). O raio acompanha o
-     * progresso do morph, então o efeito abre e fecha junto com o vidro.
+     * Cria uma janela de blur **local**. Window.setBackgroundBlurRadius() é o único
+     * caminho público que desfoca apenas o retângulo da janela; setBlurBehindRadius()
+     * desfoca a tela inteira e por isso foi removido.
      */
-    private fun applyPanelWindowBlur(active: Boolean) =
-        applyPanelBlurProgress(if (active) 1f else 0f)
+    private fun createBlurSurface(oval: Boolean): BlurSurface? {
+        val dialog = Dialog(this, R.style.GlassBlurWindow)
+        val window = dialog.window ?: return null
+        val flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+        window.setFlags(flags, flags)
+        window.setDimAmount(0f)
+        window.setGravity(Gravity.TOP or Gravity.START)
+        // DecorView só replica cantos MODE_ROUND_RECT no blur; por isso a bolinha
+        // também usa um retângulo com raio = metade do diâmetro, não um OVAL.
+        val background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = if (oval) {
+                (ballSize / 2f).coerceAtLeast(1f)
+            } else {
+                dp(prefs.panelCornerDp.toFloat()).coerceAtLeast(1f)
+            }
+            setColor(Color.TRANSPARENT)
+        }
+        window.setBackgroundDrawable(background)
+        val lp = window.attributes
+        lp.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        lp.flags = flags
+        lp.gravity = Gravity.TOP or Gravity.START
+        lp.format = PixelFormat.TRANSLUCENT
+        lp.width = 1
+        lp.height = 1
+        lp.x = OFFSCREEN_X
+        lp.y = OFFSCREEN_Y
+        window.attributes = lp
+        return try {
+            dialog.show()
+            BlurSurface(dialog, window, background)
+        } catch (t: Throwable) {
+            Log.w("GlassAssist", "Janela de blur local indisponível", t)
+            blurSurfaceFailed = true
+            blurSupported = false
+            null
+        }
+    }
 
-    private fun applyPanelBlurProgress(progress: Float) {
-        val lp = panelParams ?: return
-        val view = panelRoot ?: return
+    /** Move a região do blur e troca o raio só quando o estado realmente muda. */
+    private fun updateBlurSurface(
+        surface: BlurSurface?,
+        rect: GlassRect,
+        radius: Int,
+        cornerRadius: Float
+    ) {
+        val window = surface?.window ?: return
+        val safeRadius = if (blurSupported) radius.coerceAtLeast(0) else 0
+        val target = if (safeRadius > 0) rect else GlassRect(OFFSCREEN_X, OFFSCREEN_Y, 1, 1)
+        val lp = window.attributes
+        if (lp.x != target.x || lp.y != target.y || lp.width != target.w || lp.height != target.h) {
+            lp.x = target.x
+            lp.y = target.y
+            lp.width = target.w
+            lp.height = target.h
+            try {
+                window.attributes = lp
+            } catch (_: Throwable) {
+            }
+        }
+        try {
+            window.setBackgroundBlurRadius(safeRadius)
+        } catch (_: Throwable) {
+        }
+        if (safeRadius > 0) {
+            val bg = surface.background
+            val next = cornerRadius.coerceAtLeast(1f)
+            if (bg.cornerRadius != next) bg.cornerRadius = next
+        }
+    }
+
+    /** Blur nativo do painel: intensidade própria (1..100), preso aos limites do painel. */
+    private fun applyPanelWindowBlur(active: Boolean) {
+        val enabled = active && panelOpen && !morphing && !lowPowerMode && hiddenByApp == null
         val amount = prefs.blurRadius.coerceIn(1, 100) / 100f
-        val full = dp(2f + 14f * amount).toInt()
         val radius =
-            if (blurSupported && prefs.nativeBlurPanel) {
-                (full * progress.coerceIn(0f, 1f)).toInt()
+            if (enabled && blurSupported && prefs.nativeBlurPanel) {
+                dp(2f + 14f * amount).toInt()
             } else 0
-        setWindowBlur(lp, radius)
-        try {
-            wm.updateViewLayout(view, lp)
-        } catch (_: IllegalArgumentException) {
-        }
+        val rect = panelRectNow.takeIf { it.w > 0 && it.h > 0 } ?: computePanelRect()
+        updateBlurSurface(
+            panelBlur,
+            rect,
+            radius,
+            cornerRadius = dp(prefs.panelCornerDp.toFloat())
+        )
     }
 
-    /**
-     * Blur de fundo da bolinha: controle separado, limitado a 1..10. Antes ele
-     * dividia o slider do painel e, em 100, desfocava a tela inteira.
-     */
+    /** Blur da bolinha: controle separado (1..10), preso aos limites da bolinha. */
     private fun applyBallWindowBlur() {
-        val lp = ballParams ?: return
         val view = ballView ?: return
-        val visible = view.visibility == View.VISIBLE && !lowPowerMode &&
-            hiddenByApp == null && !morphing
+        val enabled = view.visibility == View.VISIBLE && !lowPowerMode &&
+            hiddenByApp == null && !morphing && blurSupported && prefs.nativeBlurBall
         val radius =
-            if (visible && blurSupported && prefs.nativeBlurBall) {
-                dp(prefs.screenBlurRadius.coerceIn(1, 10).toFloat()).toInt()
-            } else 0
-        setWindowBlur(lp, radius)
-        try {
-            wm.updateViewLayout(view, lp)
-        } catch (_: IllegalArgumentException) {
-        }
-    }
-
-    private fun setWindowBlur(lp: WindowManager.LayoutParams, radius: Int) {
-        lp.setBlurBehindRadius(radius)
-        lp.flags = if (radius > 0) {
-            lp.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-        } else {
-            lp.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
-        }
+            if (enabled) dp(prefs.screenBlurRadius.coerceIn(1, 10).toFloat()).toInt() else 0
+        updateBlurSurface(
+            ballBlur,
+            GlassRect(ballX, ballY, ballSize, ballSize),
+            radius,
+            cornerRadius = ballSize / 2f
+        )
     }
 
     private fun installBlurListener() {
@@ -686,9 +837,9 @@ class FloatingBallService : Service(), PanelController.Host {
             wm.isCrossWindowBlurEnabled
         } catch (_: Throwable) {
             false
-        }
+        } && !blurSurfaceFailed
         val listener = Consumer<Boolean> { enabled ->
-            blurSupported = enabled
+            blurSupported = enabled && !blurSurfaceFailed
             handler.post {
                 if (isRunning) {
                     applyPanelWindowBlur(panelOpen && !lowPowerMode)
@@ -741,8 +892,12 @@ class FloatingBallService : Service(), PanelController.Host {
         val s = size.coerceAtLeast(dp(24))
         lp.width = s
         lp.height = s
-        lp.x = (centerX - s / 2).coerceIn(0, (screenWidth - s).coerceAtLeast(0))
-        lp.y = (centerY - s / 2).coerceIn(0, (screenHeight - s).coerceAtLeast(0))
+        val minX = safeLeft.coerceAtMost(screenWidth - s)
+        val minY = safeTop.coerceAtMost(screenHeight - s)
+        val maxX = (screenWidth - safeRight - s).coerceAtLeast(minX)
+        val maxY = (screenHeight - safeBottom - s).coerceAtLeast(minY)
+        lp.x = (centerX - s / 2).coerceIn(minX, maxX)
+        lp.y = (centerY - s / 2).coerceIn(minY, maxY)
         try {
             wm.updateViewLayout(view, lp)
         } catch (_: IllegalArgumentException) {
@@ -751,6 +906,7 @@ class FloatingBallService : Service(), PanelController.Host {
 
     private fun restoreBallWindow() {
         setBallWindowSize(ballSize, ballX + ballSize / 2, ballY + ballSize / 2)
+        applyBallWindowBlur()
     }
 
     /**
@@ -871,12 +1027,16 @@ class FloatingBallService : Service(), PanelController.Host {
         val root = panelRoot ?: return
         if (panelGlass == null || ballView == null || ballLogo == null) return
 
+        closeFadeToken++
+        screenshotToken++
         morphing = true
         closing = false
         panelOpen = true
         handler.removeCallbacks(idleRunnable)
         hideDismissButton()
         cancelSnapSprings()
+        cancelDismissAnimator()
+        cancelPendingBallLayout()
         cancelMorphAnimators()
         scheduleMorphWatchdog()
 
@@ -943,8 +1103,13 @@ class FloatingBallService : Service(), PanelController.Host {
     private fun closePanelNow(immediate: Boolean) {
         if (!panelOpen && !morphing) return
         if (closing) return
+        closeFadeToken++
+        screenshotToken++
         closing = true
         morphing = true
+        cancelSnapSprings()
+        cancelDismissAnimator()
+        cancelPendingBallLayout()
         cancelMorphAnimators()
         scheduleMorphWatchdog()
 
@@ -973,10 +1138,14 @@ class FloatingBallService : Service(), PanelController.Host {
      * crossfade curto — sem isso a troca de superfície parecia um salto para baixo.
      */
     private fun finishClose() {
+        morphAnimator = null
         val finalRect = morphStartRect.takeIf { it.w > 0 && it.h > 0 } ?: ballRect()
-        ballX = finalRect.x.coerceIn(0, (screenWidth - ballSize).coerceAtLeast(0))
-        ballY = finalRect.y.coerceIn(0, (screenHeight - ballSize).coerceAtLeast(0))
+        val minX = safeLeft.coerceAtMost(screenWidth - ballSize)
+        val minY = safeTop.coerceAtMost(screenHeight - ballSize)
+        ballX = finalRect.x.coerceIn(minX, (screenWidth - safeRight - ballSize).coerceAtLeast(minX))
+        ballY = finalRect.y.coerceIn(minY, (screenHeight - safeBottom - ballSize).coerceAtLeast(minY))
         restoreBallWindow()
+        prefs.savePosition(ballX, ballY)
 
         val ball = ballView
         if (ball == null || ballGlass == null) {
@@ -988,8 +1157,9 @@ class FloatingBallService : Service(), PanelController.Host {
         ball.alpha = 1f
         ballGlass?.alpha = 0f
         ballGlass?.animate()?.cancel()
+        val token = ++closeFadeToken
         ballGlass?.animate()?.alpha(1f)?.setDuration(90L)?.withEndAction {
-            if (!isRunning) return@withEndAction
+            if (!isRunning || token != closeFadeToken || !closing) return@withEndAction
             cancelToParkedState()
             showBallIfUnlocked()
         }?.start()
@@ -997,6 +1167,15 @@ class FloatingBallService : Service(), PanelController.Host {
 
     /** Cancela qualquer animação e deixa as janelas em estado de repouso. */
     private fun cancelToParkedState() {
+        closeFadeToken++
+        screenshotToken++
+        cancelSnapSprings()
+        cancelDismissAnimator()
+        cancelPendingBallLayout()
+        ballView?.animate()?.cancel()
+        ballGlass?.animate()?.cancel()
+        ballLogo?.animate()?.cancel()
+        dismissView?.animate()?.cancel()
         cancelMorphAnimators()
         morphProgress.value = 0f
         applyMorphProgress(0f)
@@ -1061,6 +1240,7 @@ class FloatingBallService : Service(), PanelController.Host {
             MotionEvent.ACTION_DOWN -> {
                 handler.removeCallbacks(idleRunnable)
                 handler.removeCallbacks(holdRunnable)
+                cancelDismissAnimator()
                 v.animate().cancel()
                 v.alpha = 1f
                 pressBall(true)
@@ -1116,14 +1296,21 @@ class FloatingBallService : Service(), PanelController.Host {
                         lastY = event.rawY
                         val rawX = dragBaseX + dxTotal.toInt()
                         val rawY = dragBaseY + dyTotal.toInt()
+                        val prevX = ballX
+                        val prevY = ballY
                         applyDismissMagnet(lp, rawX, rawY)
-                        ballX = lp.x.coerceIn(0, (screenWidth - ballSize).coerceAtLeast(0))
-                        ballY = lp.y.coerceIn(0, (screenHeight - ballSize).coerceAtLeast(0))
-                        lp.x = ballX
-                        lp.y = ballY
-                        try {
-                            wm.updateViewLayout(v, lp)
-                        } catch (_: IllegalArgumentException) {
+                        ballX = lp.x.coerceIn(
+                            safeLeft.coerceAtMost(screenWidth - ballSize),
+                            (screenWidth - safeRight - ballSize).coerceAtLeast(safeLeft)
+                        )
+                        ballY = lp.y.coerceIn(
+                            safeTop.coerceAtMost(screenHeight - ballSize),
+                            (screenHeight - safeBottom - ballSize).coerceAtLeast(safeTop)
+                        )
+                        if (ballX != prevX || ballY != prevY) {
+                            lp.x = ballX
+                            lp.y = ballY
+                            scheduleBallLayout()
                         }
                     }
 
@@ -1189,10 +1376,12 @@ class FloatingBallService : Service(), PanelController.Host {
         baseY: Int
     ) {
         val view = dismissView
-        val maxX = (screenWidth - ballSize).coerceAtLeast(0)
-        val maxY = (screenHeight - ballSize).coerceAtLeast(0)
-        var x = baseX.coerceIn(0, maxX)
-        var y = baseY.coerceIn(0, maxY)
+        val minX = safeLeft.coerceAtMost(screenWidth - ballSize)
+        val minY = safeTop.coerceAtMost(screenHeight - ballSize)
+        val maxX = (screenWidth - safeRight - ballSize).coerceAtLeast(minX)
+        val maxY = (screenHeight - safeBottom - ballSize).coerceAtLeast(minY)
+        var x = baseX.coerceIn(minX, maxX)
+        var y = baseY.coerceIn(minY, maxY)
         var strength = 0f
         if (view != null && view.visibility == View.VISIBLE && hiddenByApp == null) {
             val cx = x + ballSize / 2f
@@ -1206,8 +1395,8 @@ class FloatingBallService : Service(), PanelController.Host {
                 val limit = dp(26f).toFloat()
                 val pullX = (dx * 0.26f * strength).coerceIn(-limit, limit)
                 val pullY = (dy * 0.26f * strength).coerceIn(-limit, limit)
-                x = (x + pullX).toInt().coerceIn(0, maxX)
-                y = (y + pullY).toInt().coerceIn(0, maxY)
+                x = (x + pullX).toInt().coerceIn(minX, maxX)
+                y = (y + pullY).toInt().coerceIn(minY, maxY)
             }
         }
         lp.x = x
@@ -1230,6 +1419,17 @@ class FloatingBallService : Service(), PanelController.Host {
         val cx = ballX + ballSize / 2f
         val cy = ballY + ballSize / 2f
         return hypot(dismissCenterX - cx, dismissCenterY - cy) <= dp(34f).toFloat()
+    }
+
+    /** Cancela a animação de "engolir" e devolve a bolinha ao estado normal. */
+    private fun cancelDismissAnimator() {
+        dismissActionToken++
+        dismissAnimator?.cancel()
+        dismissAnimator = null
+        ballView?.animate()?.cancel()
+        ballView?.alpha = 1f
+        ballView?.scaleX = 1f
+        ballView?.scaleY = 1f
     }
 
     /** A bolinha entra no X (posição + encolhimento) antes de sumir do app atual. */
@@ -1256,16 +1456,21 @@ class FloatingBallService : Service(), PanelController.Host {
         val xStartTranslationY = xView?.translationY ?: 0f
         val xStartAlpha = xView?.alpha ?: 0.92f
         val visualCenterY = dismissCenterY + xStartTranslationY
-        val targetX = (dismissCenterX - ballSize / 2f)
-            .toInt().coerceIn(0, (screenWidth - ballSize).coerceAtLeast(0)).toFloat()
-        val targetY = (visualCenterY - ballSize / 2f)
-            .toInt().coerceIn(0, (screenHeight - ballSize).coerceAtLeast(0)).toFloat()
+        val minBallX = safeLeft.coerceAtMost(screenWidth - ballSize)
+        val minBallY = safeTop.coerceAtMost(screenHeight - ballSize)
+        val maxBallX = (screenWidth - safeRight - ballSize).coerceAtLeast(minBallX)
+        val maxBallY = (screenHeight - safeBottom - ballSize).coerceAtLeast(minBallY)
+        val targetX = (dismissCenterX - ballSize / 2f).toInt().coerceIn(minBallX, maxBallX).toFloat()
+        val targetY = (visualCenterY - ballSize / 2f).toInt().coerceIn(minBallY, maxBallY).toFloat()
+
+        cancelDismissAnimator()
+        val token = ++dismissActionToken
         ball.animate()
             .scaleX(0.16f).scaleY(0.16f).alpha(0f)
             .setDuration(210L)
             .setInterpolator(DecelerateInterpolator(2f))
             .start()
-        ValueAnimator.ofFloat(0f, 1f).apply {
+        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 210L
             interpolator = DecelerateInterpolator(2f)
             addUpdateListener { animation ->
@@ -1274,10 +1479,7 @@ class FloatingBallService : Service(), PanelController.Host {
                 lp.y = (startY + (targetY - startY) * t).toInt()
                 ballX = lp.x
                 ballY = lp.y
-                try {
-                    wm.updateViewLayout(ball, lp)
-                } catch (_: IllegalArgumentException) {
-                }
+                scheduleBallLayout()
                 xView?.let { view ->
                     val swallow = ((t - 0.55f) / 0.45f).coerceIn(0f, 1f)
                     view.scaleX = xStartScaleX + (0.35f - xStartScaleX) * swallow
@@ -1288,6 +1490,10 @@ class FloatingBallService : Service(), PanelController.Host {
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
+                    if (!isRunning || token != dismissActionToken ||
+                        dismissAnimator != this@apply
+                    ) return
+                    dismissAnimator = null
                     ball.scaleX = 1f
                     ball.scaleY = 1f
                     ball.alpha = 1f
@@ -1295,8 +1501,14 @@ class FloatingBallService : Service(), PanelController.Host {
                     parkBallAtTop()
                     hideCurrentApp()
                 }
+
+                override fun onAnimationCancel(animation: Animator) {
+                    if (dismissAnimator == this@apply) dismissAnimator = null
+                }
             })
-        }.start()
+        }
+        dismissAnimator = animator
+        animator.start()
     }
 
     /** Volta sempre para um canto superior; usado ao sair de um app oculto. */
@@ -1336,30 +1548,42 @@ class FloatingBallService : Service(), PanelController.Host {
         val (minX, maxX) = edgeMargins()
         val (minY, maxY) = verticalMargins()
         val slop = dp(5).toFloat()
+        val landscape = isLandscape()
         val targetX: Float
         val targetY: Float
+        val toRight: Boolean
+        val toBottom: Boolean?
 
-        if (isLandscape()) {
-            val toRight = if (abs(lastDragDx) > slop) lastDragDx >= 0f else ballX >= screenWidth / 2
-            val toBottom = if (abs(lastDragDy) > slop) lastDragDy >= 0f else ballY >= screenHeight / 2
+        if (landscape) {
+            toRight = if (abs(lastDragDx) > slop) lastDragDx >= 0f else ballX >= screenWidth / 2
+            toBottom = if (abs(lastDragDy) > slop) lastDragDy >= 0f else ballY >= screenHeight / 2
             targetX = (if (toRight) maxX else minX).toFloat()
             targetY = (if (toBottom) maxY else minY).toFloat()
-            val corner = cornerFrom(toRight, toBottom)
-            prefs.ballCorner = corner
-            prefs.ballEdge = if (toRight) 1 else 0
         } else {
-            val toRight = if (abs(lastDragDx) > slop) lastDragDx >= 0f else ballX >= screenWidth / 2
+            toRight = if (abs(lastDragDx) > slop) lastDragDx >= 0f else ballX >= screenWidth / 2
+            toBottom = null
             targetX = (if (toRight) maxX else minX).toFloat()
             targetY = ballY.coerceIn(minY, maxY).toFloat()
-            prefs.ballEdge = if (toRight) 1 else 0
+        }
+
+        // Só persiste quando a molas termina: cancelar no meio não pode gravar
+        // uma âncora que a bolinha nunca alcançou.
+        fun persistAnchor() {
+            if (landscape && toBottom != null) {
+                prefs.ballCorner = cornerFrom(toRight, toBottom)
+                prefs.ballEdge = if (toRight) 1 else 0
+            } else {
+                prefs.ballEdge = if (toRight) 1 else 0
+            }
+            prefs.savePosition(ballX, ballY)
+            updatePanelPosition()
         }
 
         cancelSnapSprings()
         if (!animate) {
             ballXProperty.setValue(view, targetX)
             ballYProperty.setValue(view, targetY)
-            prefs.savePosition(ballX, ballY)
-            updatePanelPosition()
+            persistAnchor()
             return
         }
 
@@ -1371,8 +1595,7 @@ class FloatingBallService : Service(), PanelController.Host {
                 if (snapSprings.contains(anim) && !canceled) {
                     snapRemaining -= 1
                     if (snapRemaining <= 0) {
-                        prefs.savePosition(ballX, ballY)
-                        updatePanelPosition()
+                        persistAnchor()
                         snapSprings.clear()
                     }
                 }
@@ -1383,8 +1606,7 @@ class FloatingBallService : Service(), PanelController.Host {
         addSpring(ballXProperty, targetX)
         addSpring(ballYProperty, targetY)
         if (snapRemaining == 0) {
-            prefs.savePosition(ballX, ballY)
-            updatePanelPosition()
+            persistAnchor()
         } else {
             snapSprings.forEach { it.start() }
         }
@@ -1510,7 +1732,8 @@ class FloatingBallService : Service(), PanelController.Host {
     private fun handleConfigurationChanged() {
         if (!isRunning) return
         // Geometria mudando no meio do morph deixaria pivô e alvos das molas errados.
-        if (morphing) cancelToParkedState()
+        val wasMorphing = morphing
+        if (wasMorphing) cancelToParkedState()
         refreshMetrics()
         ballSize = dp(prefs.ballSizeDp)
         restoreBallAnchor()
@@ -1534,16 +1757,21 @@ class FloatingBallService : Service(), PanelController.Host {
         applyPanelWindowBlur(panelOpen && !lowPowerMode)
         applyBallWindowBlur()
         positionDismissButton()
+        // cancelToParkedState() esconde a bolinha; sem isso a rotação no meio do
+        // morph deixava o overlay invisível até o próximo evento de tela.
+        if (wasMorphing) showBallIfUnlocked()
     }
 
     // ------------------------------------------------------------------ configurações
 
     private fun applySettings() {
         if (morphing) cancelToParkedState()
+        cancelSnapSprings()
+        cancelDismissAnimator()
+        cancelPendingBallLayout()
         refreshMetrics()
         ballSize = dp(prefs.ballSizeDp)
         restoreBallAnchor()
-        cancelSnapSprings()
         controller?.resetEdgePress()
         controller?.rebuildTiles()
 
@@ -1576,6 +1804,7 @@ class FloatingBallService : Service(), PanelController.Host {
         val wasOpen = panelOpen
         cancelToParkedState()
         hideAllOverlayViews()
+        val token = screenshotToken
         handler.postDelayed({
             Thread {
                 var ok = false
@@ -1591,6 +1820,10 @@ class FloatingBallService : Service(), PanelController.Host {
                     handler.post {
                         if (!isRunning) return@post
                         toast(if (ok) "Captura salva na galeria" else "Falha na captura: $message")
+                        if (token != screenshotToken) {
+                            showBallIfUnlocked()
+                            return@post
+                        }
                         if (wasOpen && hiddenByApp == null && !lowPowerMode) {
                             showBallIfUnlocked()
                             openPanel()
@@ -1624,7 +1857,13 @@ class FloatingBallService : Service(), PanelController.Host {
 
     private fun removeSurfaces() {
         handler.removeCallbacksAndMessages(null)
+        handler.removeCallbacks(configRetryRunnable)
         stopAppMonitor()
+        closeFadeToken++
+        dismissActionToken++
+        screenshotToken++
+        cancelDismissAnimator()
+        cancelPendingBallLayout()
         cancelMorphAnimators()
         cancelSnapSprings()
         blurListener?.let {
@@ -1635,8 +1874,23 @@ class FloatingBallService : Service(), PanelController.Host {
         }
         blurListener = null
         ballView?.animate()?.cancel()
+        ballGlass?.animate()?.cancel()
+        ballLogo?.animate()?.cancel()
         panelRoot?.animate()?.cancel()
         dismissView?.animate()?.cancel()
+
+        listOf(panelBlur, ballBlur).forEach { surface ->
+            try {
+                surface?.window?.setBackgroundBlurRadius(0)
+            } catch (_: Throwable) {
+            }
+            try {
+                surface?.dialog?.dismiss()
+            } catch (_: Throwable) {
+            }
+        }
+        panelBlur = null
+        ballBlur = null
 
         val surfaces = listOf(dismissView, ballView, panelRoot, catcherView)
         surfaces.forEach { view ->

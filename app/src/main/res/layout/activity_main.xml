@@ -111,7 +111,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
-                android:text="Na primeira execução, o app concede a si mesmo: overlay, WRITE_SECURE_SETTINGS, notificações, câmera e whitelist de bateria."
+                android:text="Na primeira execução, o app concede a si mesmo: overlay, notificações, câmera e whitelist de bateria."
                 android:textColor="#FFCBD5E1"
                 android:textSize="12sp" />
         </LinearLayout>
@@ -176,8 +176,9 @@
                 android:id="@+id/seekAlpha"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:max="80"
-                android:progress="25" />
+                android:min="20"
+                android:max="100"
+                android:progress="45" />
 
             <TextView
                 android:id="@+id/lblBlur"

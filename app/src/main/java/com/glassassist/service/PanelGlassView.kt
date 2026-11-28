@@ -77,9 +77,20 @@ class PanelGlassView @JvmOverloads constructor(
         }
 
     /** Região visível do vidro em coordenadas locais; null = view inteira. */
-    var morphRect: RectF? = null
+    private val morphRectLocal = RectF()
+    private var hasMorphRect = false
+
+    var morphRect: RectF?
+        get() = if (hasMorphRect) morphRectLocal else null
         set(value) {
-            field = value?.let { RectF(it) }
+            if (value == null) {
+                if (!hasMorphRect) return
+                hasMorphRect = false
+            } else {
+                // Reaproveita o RectF: o morph roda a cada frame.
+                morphRectLocal.set(value)
+                hasMorphRect = true
+            }
             invalidate()
         }
 
@@ -118,6 +129,12 @@ class PanelGlassView @JvmOverloads constructor(
         color = Color.argb(120, 255, 255, 255)
     }
     private val fringePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+
+    private var cachedGradient: RadialGradient? = null
+    private var cachedGradientX = Float.NaN
+    private var cachedGradientY = Float.NaN
+    private var cachedGradientRadius = -1f
+    private var cachedGradientAlpha = -1f
 
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
 
@@ -201,16 +218,25 @@ class PanelGlassView @JvmOverloads constructor(
         canvas.restore()
 
         glowPaint.strokeWidth = dp(1.8f + 1.2f * a)
-        glowPaint.shader = RadialGradient(
-            gx, gy, glowRadius,
-            intArrayOf(
-                Color.argb((170 * a).toInt().coerceIn(0, 255), 255, 255, 255),
-                Color.argb((100 * a).toInt().coerceIn(0, 255), 190, 225, 255),
-                Color.TRANSPARENT
-            ),
-            floatArrayOf(0f, 0.32f, 1f),
-            Shader.TileMode.CLAMP
-        )
+        if (gx != cachedGradientX || gy != cachedGradientY ||
+            glowRadius != cachedGradientRadius || a != cachedGradientAlpha
+        ) {
+            cachedGradient = RadialGradient(
+                gx, gy, glowRadius,
+                intArrayOf(
+                    Color.argb((170 * a).toInt().coerceIn(0, 255), 255, 255, 255),
+                    Color.argb((100 * a).toInt().coerceIn(0, 255), 190, 225, 255),
+                    Color.TRANSPARENT
+                ),
+                floatArrayOf(0f, 0.32f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            cachedGradientX = gx
+            cachedGradientY = gy
+            cachedGradientRadius = glowRadius
+            cachedGradientAlpha = a
+        }
+        glowPaint.shader = cachedGradient
         canvas.drawPath(glowPath, glowPaint)
         glowPaint.shader = null
 

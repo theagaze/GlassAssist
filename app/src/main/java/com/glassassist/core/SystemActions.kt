@@ -79,7 +79,13 @@ object SystemActions {
         val file = File(dir, "GlassAssist-${System.currentTimeMillis()}.png")
         val shot = captureScreenTo(file)
         if (!shot.ok) return false to shot.message
-        return true to (registerInMediaStore(context, file)?.toString() ?: file.absolutePath)
+        val uri = registerInMediaStore(context, file)
+        if (uri != null) {
+            // A cópia já está no MediaStore: não deixa o PNG duplicado no app.
+            file.delete()
+            return true to uri.toString()
+        }
+        return true to file.absolutePath
     }
 
     fun registerInMediaStore(context: Context, file: File): Uri? {
@@ -92,8 +98,12 @@ object SystemActions {
         }
         val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
         try {
-            resolver.openOutputStream(uri)?.use { out ->
-                FileInputStream(file).use { input -> input.copyTo(out) }
+            val out = resolver.openOutputStream(uri) ?: run {
+                resolver.delete(uri, null, null)
+                return null
+            }
+            out.use { stream ->
+                FileInputStream(file).use { input -> input.copyTo(stream) }
             }
             values.clear()
             values.put(MediaStore.Images.Media.IS_PENDING, 0)

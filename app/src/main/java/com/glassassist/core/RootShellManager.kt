@@ -300,14 +300,13 @@ object RootShellManager {
     /**
      * Concessão automática de privilégios. O único pré-requisito manual é o toggle do
      * pacote em KernelSU Manager → Superuser; depois que o shell responde `uid=0`,
-     * o próprio app libera overlay, WRITE_SECURE_SETTINGS, notificações, câmera
-     * (lanterna) e a whitelist de bateria.
+     * o próprio app libera overlay, notificações, câmera (lanterna) e a whitelist
+     * de bateria. As configurações de sistema são escritas pelo próprio shell root.
      */
     fun provisionSelf(context: Context): Pair<Boolean, String> {
         val pkg = context.packageName
         val script = listOf(
             "appops set $pkg SYSTEM_ALERT_WINDOW allow",
-            "pm grant $pkg android.permission.WRITE_SECURE_SETTINGS",
             "pm grant $pkg android.permission.POST_NOTIFICATIONS",
             "pm grant $pkg android.permission.CAMERA",
             "dumpsys deviceidle whitelist +$pkg",
@@ -321,8 +320,8 @@ object RootShellManager {
             return false to "O shell root respondeu, mas a concessão automática não confirmou execução. " +
                 "Verifique o toggle do GlassAssist em KernelSU Manager → Superuser."
         }
-        return true to "Root autorizado. Overlay, WRITE_SECURE_SETTINGS, notificações, câmera e " +
-            "whitelist de bateria concedidos automaticamente pelo shell persistente."
+        return true to "Root autorizado. Overlay, notificações, câmera e whitelist de bateria " +
+            "concedidos automaticamente pelo shell persistente."
     }
 
     fun provisionSelfAsync(context: Context, callback: (Boolean, String) -> Unit) {

@@ -72,6 +72,7 @@ class PanelController(
     private val repeatRunnables = mutableSetOf<Runnable>()
     private val holdAnimators = mutableMapOf<View, ValueAnimator>()
     private var edgeAnimator: ValueAnimator? = null
+    private var confirmDialog: AlertDialog? = null
 
     init {
         buildPages()
@@ -573,6 +574,7 @@ class PanelController(
             .scaleX(0.9f).scaleY(0.9f)
             .setDuration(70L)
             .withEndAction {
+                if (disposed) return@withEndAction
                 view.animate().scaleX(1f).scaleY(1f).setDuration(130L).start()
             }
             .start()
@@ -585,21 +587,41 @@ class PanelController(
     }
 
     private fun confirmRootAction(title: String, action: () -> Unit) {
+        if (disposed) return
+        confirmDialog?.let {
+            try {
+                it.dismiss()
+            } catch (_: Throwable) {
+            }
+        }
+        confirmDialog = null
         val dialog = AlertDialog.Builder(service)
             .setTitle(title)
             .setMessage("O comando será enviado pelo shell root persistente.")
             .setPositiveButton("Executar") { _, _ ->
+                if (disposed) return@setPositiveButton
+                confirmDialog = null
                 host.closePanelNow()
                 action()
             }
             .setNegativeButton("Cancelar", null)
             .create()
+        dialog.setOnDismissListener {
+            if (confirmDialog == dialog) confirmDialog = null
+        }
+        confirmDialog = dialog
         try {
             dialog.window?.setType(android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
             dialog.show()
-        } catch (_: Exception) {
-            host.closePanelNow()
-            action()
+        } catch (t: Exception) {
+            confirmDialog = null
+            try {
+                dialog.dismiss()
+            } catch (_: Throwable) {
+            }
+            // Um erro de janela nunca pode virar confirmação implícita de reboot.
+            Log.w("GlassAssist", "Falha ao mostrar confirmação root", t)
+            host.toast("Não foi possível confirmar; comando cancelado")
         }
     }
 
@@ -608,6 +630,13 @@ class PanelController(
         cancelTileRepeats()
         edgeAnimator?.cancel()
         edgeAnimator = null
+        confirmDialog?.let {
+            try {
+                it.dismiss()
+            } catch (_: Throwable) {
+            }
+        }
+        confirmDialog = null
         handler.removeCallbacksAndMessages(null)
         // A lib libera os próprios caches no onDetachedFromWindow.
         panelGlass.darkness = 0f

@@ -138,8 +138,8 @@ class MainActivity : Activity() {
             "Serviço: parado · $shell"
         }
         autoGrantStatus.text = if (prefs.rootProvisioned) {
-            "Permissões concedidas automaticamente pelo root: overlay, WRITE_SECURE_SETTINGS, " +
-                "notificações, câmera e whitelist de bateria."
+            "Permissões concedidas automaticamente pelo root: overlay, notificações, câmera " +
+                "e whitelist de bateria."
         } else {
             "Aguardando autorização root. Ative com.glassassist em KernelSU Manager → Superuser."
         }
