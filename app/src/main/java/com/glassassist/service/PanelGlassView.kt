@@ -59,14 +59,12 @@ class PanelGlassView @JvmOverloads constructor(
         }
 
     /**
-     * Durante o morph o pipeline da lib é caro e derruba os quadros. Desenhamos
-     * apenas a forma arredondada; no fim voltamos ao vidro completo sem "consertar"
-     * nada, porque o canto final já está assentado.
+     * Fade dos efeitos de fundo junto com o morph. 0 = bolinha, 1 = painel aberto.
+     * Assim desfoque/escurecimento/brilho não aparecem só depois da animação.
      */
-    var morphShapeOnly: Boolean = false
+    var effectsAlpha: Float = 1f
         set(value) {
-            if (field == value) return
-            field = value
+            field = value.coerceIn(0f, 1f)
             invalidate()
         }
 
@@ -110,17 +108,15 @@ class PanelGlassView @JvmOverloads constructor(
     }
 
     override fun onDraw(canvas: Canvas) {
-        if (morphShapeOnly) {
-            drawMorphShape(canvas)
-            return
-        }
-        super.onDraw(canvas)
+        // Desenho próprio o tempo todo: o pipeline pesado da lib não roda durante
+        // o morph, então não há queda de quadros nem "troca" de vidro no fim.
+        drawGlassShape(canvas)
         drawDarkness(canvas)
     }
 
     override fun dispatchDraw(canvas: Canvas) {
         // Brilho da borda abaixo dos botões, sem recorte.
-        if (!morphShapeOnly) drawEdgeGlow(canvas)
+        drawEdgeGlow(canvas)
         val save = canvas.save()
         // Recorta os filhos pela mesma borda arredondada: as páginas entram pela
         // curva do vidro, nunca por um retângulo solto.
@@ -134,7 +130,7 @@ class PanelGlassView @JvmOverloads constructor(
         canvas.restoreToCount(save)
     }
 
-    private fun drawMorphShape(canvas: Canvas) {
+    private fun drawGlassShape(canvas: Canvas) {
         if (width <= 0 || height <= 0) return
         val r = cornerRadius.coerceAtMost(min(width, height) / 2f)
         clipPath.reset()
@@ -153,7 +149,7 @@ class PanelGlassView @JvmOverloads constructor(
         clipPath.addRoundRect(
             0f, 0f, width.toFloat(), height.toFloat(), r, r, Path.Direction.CW
         )
-        darkPaint.alpha = (darkness * 255f).toInt().coerceIn(0, 204)
+        darkPaint.alpha = (darkness * 255f * effectsAlpha).toInt().coerceIn(0, 204)
         canvas.drawPath(clipPath, darkPaint)
     }
 
