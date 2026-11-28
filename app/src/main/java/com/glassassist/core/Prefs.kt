@@ -34,9 +34,15 @@ class Prefs private constructor(context: Context) {
         get() = sp.getFloat(KEY_INACTIVE_ALPHA, 0.45f)
         set(value) = sp.edit().putFloat(KEY_INACTIVE_ALPHA, value.coerceIn(0.2f, 1f)).apply()
 
+    /** Desfoque do painel: 1..100, independente do desfoque de fundo. */
     var blurRadius: Int
-        get() = sp.getInt(KEY_BLUR, 40)
-        set(value) = sp.edit().putInt(KEY_BLUR, value.coerceIn(0, 100)).apply()
+        get() = sp.getInt(KEY_BLUR, 40).coerceIn(1, 100)
+        set(value) = sp.edit().putInt(KEY_BLUR, value.coerceIn(1, 100)).apply()
+
+    /** Desfoque de fundo/bolinha: limitado a 1..10 para não tomar a tela toda. */
+    var screenBlurRadius: Int
+        get() = sp.getInt(KEY_SCREEN_BLUR, 4).coerceIn(1, 10)
+        set(value) = sp.edit().putInt(KEY_SCREEN_BLUR, value.coerceIn(1, 10)).apply()
 
     var refractionStrength: Float
         get() = sp.getFloat(KEY_REFRACTION, DEFAULT_REFRACTION)
@@ -148,6 +154,7 @@ class Prefs private constructor(context: Context) {
             .remove(KEY_BALL_SIZE)
             .remove(KEY_INACTIVE_ALPHA)
             .remove(KEY_BLUR)
+            .remove(KEY_SCREEN_BLUR)
             .remove(KEY_REFRACTION)
             .putFloat(KEY_REFRACTION, DEFAULT_REFRACTION)
             .putBoolean(KEY_REFRACTION_MIGRATED, true)
@@ -176,6 +183,7 @@ class Prefs private constructor(context: Context) {
         private const val KEY_BALL_SIZE = "ball_size_dp"
         private const val KEY_INACTIVE_ALPHA = "inactive_alpha"
         private const val KEY_BLUR = "blur_radius"
+        private const val KEY_SCREEN_BLUR = "screen_blur_radius"
         private const val KEY_REFRACTION = "refraction"
         private const val KEY_REFRACTION_MIGRATED = "refraction_migrated_05"
         private const val KEY_BLUR_MODE = "blur_mode"

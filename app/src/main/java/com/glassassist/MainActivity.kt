@@ -162,9 +162,14 @@ class MainActivity : Activity() {
             findViewById<TextView>(R.id.lblAlpha).text = "Opacidade inativa: $progress%"
         })
         findViewById<SeekBar>(R.id.seekBlur).setOnSeekBarChangeListener(simpleSeek { progress ->
-            prefs.blurRadius = progress
+            prefs.blurRadius = progress.coerceIn(1, 100)
             findViewById<TextView>(R.id.lblBlur).text =
-                "Intensidade do desfoque nativo: $progress"
+                "Desfoque do painel: ${prefs.blurRadius}"
+        })
+        findViewById<SeekBar>(R.id.seekScreenBlur).setOnSeekBarChangeListener(simpleSeek { progress ->
+            prefs.screenBlurRadius = progress.coerceIn(1, 10)
+            findViewById<TextView>(R.id.lblScreenBlur).text =
+                "Desfoque de fundo: ${prefs.screenBlurRadius}"
         })
         findViewById<CheckBox>(R.id.cbBlurPanel).setOnCheckedChangeListener { _, checked ->
             prefs.nativeBlurPanel = checked
@@ -217,6 +222,7 @@ class MainActivity : Activity() {
         findViewById<SeekBar>(R.id.seekSize).progress = prefs.ballSizeDp - 48
         findViewById<SeekBar>(R.id.seekAlpha).progress = (prefs.inactiveAlpha * 100).toInt()
         findViewById<SeekBar>(R.id.seekBlur).progress = prefs.blurRadius
+        findViewById<SeekBar>(R.id.seekScreenBlur).progress = prefs.screenBlurRadius
         findViewById<CheckBox>(R.id.cbBlurPanel).isChecked = prefs.nativeBlurPanel
         findViewById<CheckBox>(R.id.cbBlurBall).isChecked = prefs.nativeBlurBall
         findViewById<SeekBar>(R.id.seekRefraction).progress = (prefs.refractionStrength * 100).toInt()
@@ -224,7 +230,9 @@ class MainActivity : Activity() {
         findViewById<TextView>(R.id.lblSize).text = "Tamanho da bolinha: ${prefs.ballSizeDp} dp"
         findViewById<TextView>(R.id.lblAlpha).text = "Opacidade inativa: ${(prefs.inactiveAlpha * 100).toInt()}%"
         findViewById<TextView>(R.id.lblBlur).text =
-            "Intensidade do desfoque nativo: ${prefs.blurRadius}"
+            "Desfoque do painel: ${prefs.blurRadius}"
+        findViewById<TextView>(R.id.lblScreenBlur).text =
+            "Desfoque de fundo: ${prefs.screenBlurRadius}"
         findViewById<TextView>(R.id.lblRefraction).text =
             "Refração / dispersão: ${String.format("%.2f", prefs.refractionStrength)}"
         findViewById<TextView>(R.id.lblSensitivity).text = "Sensibilidade do volume: ${prefs.volumeStepPx} px/degrau"

@@ -629,8 +629,8 @@ class FloatingBallService : Service(), PanelController.Host {
     }
 
     /**
-     * Único desfoque restante: o blur nativo da janela. O raio acompanha o progresso
-     * do morph, então o efeito abre e fecha junto com o vidro, não depois dele.
+     * Blur nativo do painel: intensidade própria (1..100). O raio acompanha o
+     * progresso do morph, então o efeito abre e fecha junto com o vidro.
      */
     private fun applyPanelWindowBlur(active: Boolean) =
         applyPanelBlurProgress(if (active) 1f else 0f)
@@ -638,10 +638,10 @@ class FloatingBallService : Service(), PanelController.Host {
     private fun applyPanelBlurProgress(progress: Float) {
         val lp = panelParams ?: return
         val view = panelRoot ?: return
-        val amount = prefs.blurRadius.coerceIn(0, 100) / 100f
+        val amount = prefs.blurRadius.coerceIn(1, 100) / 100f
         val full = dp(2f + 14f * amount).toInt()
         val radius =
-            if (blurSupported && prefs.nativeBlurPanel && amount > 0f) {
+            if (blurSupported && prefs.nativeBlurPanel) {
                 (full * progress.coerceIn(0f, 1f)).toInt()
             } else 0
         setWindowBlur(lp, radius)
@@ -651,16 +651,18 @@ class FloatingBallService : Service(), PanelController.Host {
         }
     }
 
-    /** Mesmo blur nativo aplicado à janela da bolinha, quando habilitado. */
+    /**
+     * Blur de fundo da bolinha: controle separado, limitado a 1..10. Antes ele
+     * dividia o slider do painel e, em 100, desfocava a tela inteira.
+     */
     private fun applyBallWindowBlur() {
         val lp = ballParams ?: return
         val view = ballView ?: return
-        val amount = prefs.blurRadius.coerceIn(0, 100) / 100f
         val visible = view.visibility == View.VISIBLE && !lowPowerMode &&
             hiddenByApp == null && !morphing
         val radius =
-            if (visible && blurSupported && prefs.nativeBlurBall && amount > 0f) {
-                dp(2f + 10f * amount).toInt()
+            if (visible && blurSupported && prefs.nativeBlurBall) {
+                dp(prefs.screenBlurRadius.coerceIn(1, 10).toFloat()).toInt()
             } else 0
         setWindowBlur(lp, radius)
         try {
@@ -965,9 +967,32 @@ class FloatingBallService : Service(), PanelController.Host {
         startMorph(0f) { if (closing) finishClose() }
     }
 
+    /**
+     * A bolinha visível no fim do morph é a do painel. Fazemos a janela da bolinha
+     * aparecer exatamente no mesmo rect e só então escondemos o painel, com um
+     * crossfade curto — sem isso a troca de superfície parecia um salto para baixo.
+     */
     private fun finishClose() {
-        cancelToParkedState()
-        showBallIfUnlocked()
+        val finalRect = morphStartRect.takeIf { it.w > 0 && it.h > 0 } ?: ballRect()
+        ballX = finalRect.x.coerceIn(0, (screenWidth - ballSize).coerceAtLeast(0))
+        ballY = finalRect.y.coerceIn(0, (screenHeight - ballSize).coerceAtLeast(0))
+        restoreBallWindow()
+
+        val ball = ballView
+        if (ball == null || ballGlass == null) {
+            cancelToParkedState()
+            showBallIfUnlocked()
+            return
+        }
+        ball.visibility = View.VISIBLE
+        ball.alpha = 1f
+        ballGlass?.alpha = 0f
+        ballGlass?.animate()?.cancel()
+        ballGlass?.animate()?.alpha(1f)?.setDuration(90L)?.withEndAction {
+            if (!isRunning) return@withEndAction
+            cancelToParkedState()
+            showBallIfUnlocked()
+        }?.start()
     }
 
     /** Cancela qualquer animação e deixa as janelas em estado de repouso. */

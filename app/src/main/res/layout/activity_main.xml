@@ -184,7 +184,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="Intensidade do desfoque nativo: 40"
+                android:text="Desfoque do painel: 40"
                 android:textColor="#FFE2E8F0" />
             <SeekBar
                 android:id="@+id/seekBlur"
@@ -192,6 +192,21 @@
                 android:layout_height="wrap_content"
                 android:max="100"
                 android:progress="40" />
+
+            <TextView
+                android:id="@+id/lblScreenBlur"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Desfoque de fundo: 4"
+                android:textColor="#FFE2E8F0" />
+            <SeekBar
+                android:id="@+id/seekScreenBlur"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:min="1"
+                android:max="10"
+                android:progress="4" />
 
             <TextView
                 android:layout_width="match_parent"
@@ -213,14 +228,14 @@
                 android:id="@+id/cbBlurBall"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Aplicar também na bolinha"
+                android:text="Aplicar na bolinha / fundo"
                 android:textColor="#FFE2E8F0"
                 android:textSize="13sp" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Sem captura de tela e sem vidro fosco: apenas o blur nativo do sistema quando ele estiver disponível."
+                android:text="Controles separados: painel vai até 100; o fundo vai até 10 para não desfocar a tela toda. Sem captura nem vidro fosco."
                 android:textColor="#FF93A4B8"
                 android:textSize="11sp" />
 
