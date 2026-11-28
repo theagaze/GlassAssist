@@ -35,6 +35,7 @@ import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.Toast
 import androidx.dynamicanimation.animation.FloatPropertyCompat
@@ -501,9 +502,10 @@ class FloatingBallService : Service(), PanelController.Host {
         val size = dp(46)
         // Container com altura extra só dá espaço para o "puxão" para baixo;
         // o círculo permanece quadrado, então nunca vira elipse/losango.
-        val container = android.widget.FrameLayout(this).apply {
+        val container = FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
+            visibility = View.GONE
         }
         val x = ImageView(this).apply {
             setImageResource(R.drawable.ic_close)
@@ -521,7 +523,7 @@ class FloatingBallService : Service(), PanelController.Host {
         }
         container.addView(
             x,
-            android.widget.FrameLayout.LayoutParams(size, size, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+            FrameLayout.LayoutParams(size, size, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
         )
         dismissView = container
         val lp = WindowManager.LayoutParams(
@@ -604,7 +606,16 @@ class FloatingBallService : Service(), PanelController.Host {
 
     private fun updatePanelPosition() {
         // Durante o morph quem manda é applyMorphProgress(); fora dele o alvo é o rect final.
-        if (!morphing) layoutPanel(computePanelRect())
+        if (!morphing) {
+            val rect = computePanelRect()
+            layoutPanel(rect)
+            if (panelOpen) {
+                setGlassRect(rect)
+                panelRoot?.post {
+                    if (isRunning && panelOpen && !morphing) controller?.restorePage()
+                }
+            }
+        }
         if (!panelOpen && !morphing) setCollapsedTransform()
     }
 
@@ -682,6 +693,23 @@ class FloatingBallService : Service(), PanelController.Host {
         }
     }
 
+    /**
+     * Muda só o tamanho/posição do vidro dentro da janela já existente. Nothing
+     * chama WindowManager.updateViewLayout() por frame, o que era a causa do travamento.
+     */
+    private fun setGlassRect(rect: GlassRect) {
+        val view = panelGlass ?: return
+        val finalRect = computePanelRect()
+        val lp = (view.layoutParams as? FrameLayout.LayoutParams)
+            ?: FrameLayout.LayoutParams(rect.w, rect.h).also { view.layoutParams = it }
+        lp.width = rect.w.coerceAtLeast(1)
+        lp.height = rect.h.coerceAtLeast(1)
+        lp.gravity = Gravity.TOP or Gravity.START
+        lp.leftMargin = rect.x - finalRect.x
+        lp.topMargin = rect.y - finalRect.y
+        view.setLayoutParams(lp)
+    }
+
     /** Estado recolhido: o próprio vidro do painel tem o tamanho e o canto da bolinha. */
     private fun setCollapsedTransform() {
         val view = panelGlass ?: return
@@ -691,8 +719,7 @@ class FloatingBallService : Service(), PanelController.Host {
         view.cornerRadius = (ballSize / 2f).coerceAtLeast(1f)
         view.effectsAlpha = 0f
         panelRoot?.findViewById<View>(R.id.panelContent)?.alpha = 0f
-        layoutPanel(ballRect())
-        applyPanelBlurProgress(0f)
+        setGlassRect(ballRect())
     }
 
     private fun parkPanel() {
@@ -763,9 +790,9 @@ class FloatingBallService : Service(), PanelController.Host {
     private fun lerp(a: Int, b: Int, t: Float): Int = (a + (b - a) * t).toInt()
 
     /**
-     * Uma única superfície: a janela do painel vai do retângulo da bolinha até o
-     * retângulo final. Não há bolinha desenhada por cima nem escala do vidro, então
-     * não existe "piscadinha", canto quadrado nem painel pequeno travado no fechamento.
+     * Uma única superfície: o vidro filho cresce do tamanho da bolinha até o painel.
+     * A janela do WindowManager fica parada no retângulo final — nada de
+     * updateViewLayout() por frame, que causava travamento e flashes brancos.
      */
     private fun applyMorphProgress(raw: Float) {
         val glass = panelGlass ?: return
@@ -778,7 +805,7 @@ class FloatingBallService : Service(), PanelController.Host {
             lerp(morphStartRect.w, morphEndRect.w, e).coerceAtLeast(1),
             lerp(morphStartRect.h, morphEndRect.h, e).coerceAtLeast(1)
         )
-        layoutPanel(rect)
+        setGlassRect(rect)
 
         val ballRadius = (ballSize / 2f).coerceAtLeast(1f)
         val panelRadius = dp(prefs.panelCornerDp.toFloat())
@@ -789,17 +816,14 @@ class FloatingBallService : Service(), PanelController.Host {
         glass.effectsAlpha = s
         panelRoot?.findViewById<View>(R.id.panelContent)?.alpha =
             ((s - 0.34f) / 0.66f).coerceIn(0f, 1f)
-        applyPanelBlurProgress(s)
 
         // A janela da bolinha só carrega a logo; o vidro visível é o próprio painel.
-        ballView?.visibility = View.VISIBLE
         ballGlass?.alpha = 0f
         val logoAlpha = ((0.38f - s) / 0.38f).coerceIn(0f, 1f)
         ballLogo?.alpha = logoAlpha
         val logoScale = 1f - 0.14f * s
         ballLogo?.scaleX = logoScale
         ballLogo?.scaleY = logoScale
-        restoreBallWindow()
     }
 
     /** ValueAnimator com overshoot leve: fluido e elástico sem deformar o vidro. */
@@ -808,8 +832,10 @@ class FloatingBallService : Service(), PanelController.Host {
         val from = morphProgress.value.coerceIn(0f, 1f)
         morphProgress.value = from
         val opening = target > from
-        morphStartRect = panelRectNow.takeIf { it.w > 0 && it.h > 0 } ?: ballRect()
-        morphEndRect = if (target > 0.5f) computePanelRect() else ballRect()
+        // Progresso é sempre absoluto: 0 = bolinha, 1 = painel. Assim uma reversão
+        // no meio da animação retoma exatamente o quadro atual, sem salto.
+        morphStartRect = ballRect()
+        morphEndRect = computePanelRect()
         applyMorphProgress(from)
         val anim = ValueAnimator.ofFloat(from, target).apply {
             duration = if (opening) 430L else 380L
@@ -849,7 +875,6 @@ class FloatingBallService : Service(), PanelController.Host {
         scheduleMorphWatchdog()
 
         controller?.applyOptics()
-        controller?.restorePage()
 
         ballGlass?.animate()?.cancel()
         ballLogo?.animate()?.cancel()
@@ -859,6 +884,8 @@ class FloatingBallService : Service(), PanelController.Host {
         ballView?.alpha = 1f
         ballView?.scaleX = 1f
         ballView?.scaleY = 1f
+        restoreBallWindow()
+        applyPanelWindowBlur(true)
         applyBallWindowBlur()
 
         startMorph(1f) { if (morphing && panelOpen && !closing) finishOpen() }
@@ -869,7 +896,13 @@ class FloatingBallService : Service(), PanelController.Host {
         cancelMorphAnimators()
         morphProgress.value = 1f
         applyMorphProgress(1f)
+        setGlassRect(computePanelRect())
         layoutPanel(computePanelRect())
+        // Espera o layout com a largura final antes de reposicionar as páginas;
+        // senão a página inativa fica com translationX da bolinha e faltam botões.
+        panelRoot?.post {
+            if (isRunning && panelOpen && !morphing && !closing) controller?.restorePage()
+        }
         panelRoot?.findViewById<View>(R.id.panelContent)?.alpha = 1f
         panelGlass?.effectsAlpha = 1f
         ballView?.visibility = View.GONE
@@ -913,6 +946,9 @@ class FloatingBallService : Service(), PanelController.Host {
         ballView?.alpha = 1f
         ballView?.scaleX = 1f
         ballView?.scaleY = 1f
+        restoreBallWindow()
+        // Desfoque e escurecimento saem junto com o início do fechamento.
+        applyPanelWindowBlur(false)
         applyBallWindowBlur()
         startMorph(0f) { if (closing) finishClose() }
     }
@@ -938,7 +974,6 @@ class FloatingBallService : Service(), PanelController.Host {
         ballLogo?.alpha = 1f
         ballLogo?.scaleX = 1f
         ballLogo?.scaleY = 1f
-        controller?.restorePage()
         panelOpen = false
         morphing = false
         closing = false
