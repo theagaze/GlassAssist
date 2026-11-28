@@ -6,6 +6,16 @@ class Prefs private constructor(context: Context) {
 
     private val sp = context.applicationContext.getSharedPreferences("glassassist_prefs", Context.MODE_PRIVATE)
 
+    init {
+        // Uma única migração: a refração antiga (0.12) ficava forte demais.
+        if (!sp.contains(KEY_REFRACTION_MIGRATED)) {
+            sp.edit()
+                .putFloat(KEY_REFRACTION, DEFAULT_REFRACTION)
+                .putBoolean(KEY_REFRACTION_MIGRATED, true)
+                .apply()
+        }
+    }
+
     var ballSizeDp: Int
         get() = sp.getInt(KEY_BALL_SIZE, 64)
         set(value) = sp.edit().putInt(KEY_BALL_SIZE, value.coerceIn(48, 96)).apply()
@@ -19,8 +29,16 @@ class Prefs private constructor(context: Context) {
         set(value) = sp.edit().putInt(KEY_BLUR, value.coerceIn(0, 100)).apply()
 
     var refractionStrength: Float
-        get() = sp.getFloat(KEY_REFRACTION, 0.12f)
+        get() = sp.getFloat(KEY_REFRACTION, DEFAULT_REFRACTION)
         set(value) = sp.edit().putFloat(KEY_REFRACTION, value.coerceIn(0f, 0.3f)).apply()
+
+    /**
+     * 0 = tenta o blur nativo e usa vidro fosco se o sistema desligar o blur;
+     * 1 = somente nativo; 2 = somente vidro fosco (mais barato).
+     */
+    var blurMode: Int
+        get() = sp.getInt(KEY_BLUR_MODE, BLUR_MODE_AUTO)
+        set(value) = sp.edit().putInt(KEY_BLUR_MODE, value.coerceIn(0, 2)).apply()
 
     var volumeStepPx: Int
         get() = sp.getInt(KEY_VOLUME_STEP, 34)
@@ -113,10 +131,18 @@ class Prefs private constructor(context: Context) {
     }
 
     companion object {
+        const val BLUR_MODE_AUTO = 0
+        const val BLUR_MODE_NATIVE = 1
+        const val BLUR_MODE_VISUAL = 2
+
+        private const val DEFAULT_REFRACTION = 0.05f
+
         private const val KEY_BALL_SIZE = "ball_size_dp"
         private const val KEY_INACTIVE_ALPHA = "inactive_alpha"
         private const val KEY_BLUR = "blur_radius"
         private const val KEY_REFRACTION = "refraction"
+        private const val KEY_REFRACTION_MIGRATED = "refraction_migrated_05"
+        private const val KEY_BLUR_MODE = "blur_mode"
         private const val KEY_VOLUME_STEP = "volume_step_px"
         private const val KEY_PANEL_SIZE = "panel_size_dp"
         private const val KEY_TILE_SIZE = "tile_size_dp"

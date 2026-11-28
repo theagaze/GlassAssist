@@ -58,6 +58,17 @@ class PanelGlassView @JvmOverloads constructor(
             invalidate()
         }
 
+    /**
+     * Vidro fosco leve usado quando o blur nativo do sistema não está disponível
+     * (ou quando o usuário escolhe manualmente o modo visual). Não captura a tela:
+     * só um véu translúcido bem discreto, compatível com a animação do painel.
+     */
+    var frostStrength: Float = 0f
+        set(value) {
+            field = value.coerceIn(0f, 1f)
+            invalidate()
+        }
+
     private val clipPath = Path()
     private val darkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
@@ -73,6 +84,8 @@ class PanelGlassView @JvmOverloads constructor(
         color = Color.argb(120, 255, 255, 255)
     }
     private val fringePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val frostPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private var frostGradient: android.graphics.LinearGradient? = null
     private val glowPath = Path()
     private val glowRect = RectF()
 
@@ -84,11 +97,25 @@ class PanelGlassView @JvmOverloads constructor(
             edgeTouchX = w / 2f
             edgeTouchY = h / 2f
         }
+        if (w > 0 && h > 0) {
+            frostGradient = android.graphics.LinearGradient(
+                0f, 0f, 0f, h.toFloat(),
+                intArrayOf(
+                    Color.argb(46, 224, 239, 250),
+                    Color.argb(14, 206, 224, 238),
+                    Color.argb(30, 216, 233, 246)
+                ),
+                floatArrayOf(0f, 0.52f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            frostPaint.shader = frostGradient
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
         drawDarkness(canvas)
         super.onDraw(canvas)
+        drawFrost(canvas)
     }
 
     override fun dispatchDraw(canvas: Canvas) {
@@ -106,6 +133,17 @@ class PanelGlassView @JvmOverloads constructor(
         )
         darkPaint.alpha = (darkness * 255f).toInt().coerceIn(0, 204)
         canvas.drawPath(clipPath, darkPaint)
+    }
+
+    private fun drawFrost(canvas: Canvas) {
+        if (frostStrength <= 0.001f || width <= 0 || height <= 0) return
+        val r = cornerRadius.coerceAtMost(min(width, height) / 2f)
+        clipPath.reset()
+        clipPath.addRoundRect(
+            0f, 0f, width.toFloat(), height.toFloat(), r, r, Path.Direction.CW
+        )
+        frostPaint.alpha = (frostStrength * 235f).toInt().coerceIn(0, 235)
+        canvas.drawPath(clipPath, frostPaint)
     }
 
     private fun drawEdgeGlow(canvas: Canvas) {

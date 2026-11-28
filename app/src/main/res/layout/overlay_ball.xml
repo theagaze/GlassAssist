@@ -12,6 +12,7 @@
     app:dispersionStrength="0.16">
 
     <ImageView
+        android:id="@+id/ballLogo"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:alpha="0.94"

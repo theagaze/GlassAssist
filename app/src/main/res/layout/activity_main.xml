@@ -131,7 +131,7 @@
             android:layout_marginTop="8dp"
             android:background="@drawable/bg_card"
             android:padding="12dp"
-            android:text="1 toque: abre/fecha o painel  ·  Segure 320 ms: apagar a tela  ·  Deslize vertical: volume  ·  Arraste lateral: move e solta ancorado na borda"
+            android:text="1 toque: abre/fecha o painel  ·  Segure 320 ms: apagar a tela  ·  Em pé: deslize vertical ajusta volume e lateral ancora na borda  ·  Deitado: qualquer direção move e ancora no canto. O X inferior esconde o botão só no app atual."
             android:textColor="#FFCBD5E1"
             android:textSize="13sp" />
 
@@ -194,18 +194,67 @@
                 android:progress="40" />
 
             <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="Como aplicar o desfoque"
+                android:textColor="#FF93A4B8"
+                android:textSize="12sp" />
+
+            <RadioGroup
+                android:id="@+id/rgBlurMode"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/rbBlurAuto"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Auto"
+                    android:textColor="#FFE2E8F0"
+                    android:textSize="12sp" />
+
+                <RadioButton
+                    android:id="@+id/rbBlurNative"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Nativo"
+                    android:textColor="#FFE2E8F0"
+                    android:textSize="12sp" />
+
+                <RadioButton
+                    android:id="@+id/rbBlurVisual"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Visual"
+                    android:textColor="#FFE2E8F0"
+                    android:textSize="12sp" />
+            </RadioGroup>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Auto usa o blur do sistema e cai para vidro fosco se ele estiver desligado. Visual é o mais econômico."
+                android:textColor="#FF93A4B8"
+                android:textSize="11sp" />
+
+            <TextView
                 android:id="@+id/lblRefraction"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="Refração / dispersão: 0.12"
+                android:text="Refração / dispersão: 0.05"
                 android:textColor="#FFE2E8F0" />
             <SeekBar
                 android:id="@+id/seekRefraction"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:max="30"
-                android:progress="12" />
+                android:progress="5" />
 
             <TextView
                 android:id="@+id/lblSensitivity"

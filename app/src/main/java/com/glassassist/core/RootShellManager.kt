@@ -249,6 +249,13 @@ object RootShellManager {
 
     fun execute(command: String, timeoutMs: Long = 2500): ShellResult = defaultShell.execute(command, timeoutMs)
 
+    /** Chamado do thread de UI: a leitura bloqueante fica no executor do shell. */
+    fun executeAsync(
+        command: String,
+        timeoutMs: Long = 2500,
+        callback: (ShellResult) -> Unit
+    ) = defaultShell.executeAsync(command, timeoutMs, callback)
+
     /**
      * Bloqueante por design, mas executado SEMPRE em thread de fundo pelo serviço.
      * Usa o shell exclusivo de captura para não bloquear keyevents.

@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.widget.Button
 import android.widget.ImageView
+import android.widget.RadioGroup
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
@@ -158,6 +159,13 @@ class MainActivity : Activity() {
             prefs.blurRadius = progress
             findViewById<TextView>(R.id.lblBlur).text = "Desfoque do painel: $progress"
         })
+        findViewById<RadioGroup>(R.id.rgBlurMode).setOnCheckedChangeListener { _, checkedId ->
+            prefs.blurMode = when (checkedId) {
+                R.id.rbBlurNative -> Prefs.BLUR_MODE_NATIVE
+                R.id.rbBlurVisual -> Prefs.BLUR_MODE_VISUAL
+                else -> Prefs.BLUR_MODE_AUTO
+            }
+        }
         findViewById<SeekBar>(R.id.seekRefraction).setOnSeekBarChangeListener(simpleSeek { progress ->
             prefs.refractionStrength = progress / 100f
             findViewById<TextView>(R.id.lblRefraction).text =
@@ -203,6 +211,13 @@ class MainActivity : Activity() {
         findViewById<SeekBar>(R.id.seekSize).progress = prefs.ballSizeDp - 48
         findViewById<SeekBar>(R.id.seekAlpha).progress = (prefs.inactiveAlpha * 100).toInt()
         findViewById<SeekBar>(R.id.seekBlur).progress = prefs.blurRadius
+        findViewById<RadioGroup>(R.id.rgBlurMode).check(
+            when (prefs.blurMode) {
+                Prefs.BLUR_MODE_NATIVE -> R.id.rbBlurNative
+                Prefs.BLUR_MODE_VISUAL -> R.id.rbBlurVisual
+                else -> R.id.rbBlurAuto
+            }
+        )
         findViewById<SeekBar>(R.id.seekRefraction).progress = (prefs.refractionStrength * 100).toInt()
         findViewById<SeekBar>(R.id.seekSensitivity).progress = prefs.volumeStepPx
         findViewById<TextView>(R.id.lblSize).text = "Tamanho da bolinha: ${prefs.ballSizeDp} dp"

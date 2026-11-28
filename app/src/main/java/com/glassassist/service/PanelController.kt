@@ -294,8 +294,6 @@ class PanelController(
     // ------------------------------------------------------------------ borda 3D
 
     private fun installEdgePress() {
-        // Perspectiva bem fraca: o painel praticamente não se move ao segurar a borda.
-        panelGlass.cameraDistance = dp(220f)
         // Retornar false preserva clips, setas, paginação e botões.
         panelGlass.setOnTouchListener { _, event ->
             handlePanelEdgeTouch(event)
@@ -303,6 +301,11 @@ class PanelController(
         }
     }
 
+    /**
+     * Só um brilho local na borda. Nada de rotação/translação 3D: com a janela no
+     * tamanho exato do painel, qualquer inclinação fazia uma ponta ultrapassar a
+     * superfície e aparecer "cortada" por uma barreira invisível.
+     */
     private fun handlePanelEdgeTouch(event: MotionEvent) {
         if (disposed) return
         val w = panelGlass.width
@@ -312,7 +315,6 @@ class PanelController(
         val y = event.y.coerceIn(0f, h.toFloat())
         val distanceToEdge = minOf(x, y, w - x, h - y)
         val zone = dp(36f)
-        // Curva quadrada: perto do meio da borda o efeito ainda é bem discreto.
         val raw = (1f - distanceToEdge / zone).coerceIn(0f, 1f)
         val proximity = raw * raw * 0.55f
 
@@ -323,12 +325,7 @@ class PanelController(
                 if (proximity > 0f) {
                     edgeAnimator?.cancel()
                     edgeAnimator = null
-                    // Movimento mínimo: só um brilho local, sem inclinar o painel.
                     panelGlass.edgeIntensity = (baseEdgeIntensity + 0.14f * proximity).coerceIn(0f, 1f)
-                    panelGlass.rotationY = ((x / w) - 0.5f) * 2f * proximity
-                    panelGlass.rotationX = -(((y / h) - 0.5f) * 2f * proximity)
-                    panelGlass.translationZ = dp(1f) * proximity
-                    panelGlass.invalidate()
                 } else {
                     releaseEdgePress()
                 }
@@ -342,37 +339,23 @@ class PanelController(
         edgeAnimator?.cancel()
         edgeAnimator = null
         val fromIntensity = panelGlass.edgeIntensity
-        val fromX = panelGlass.rotationX
-        val fromY = panelGlass.rotationY
-        val fromZ = panelGlass.translationZ
         panelGlass.edgeTouchX = panelGlass.width / 2f
         panelGlass.edgeTouchY = panelGlass.height / 2f
         if (!animated || fromIntensity <= baseEdgeIntensity + 0.001f) {
             panelGlass.edgeIntensity = baseEdgeIntensity
-            panelGlass.rotationX = 0f
-            panelGlass.rotationY = 0f
-            panelGlass.translationZ = 0f
             return
         }
         edgeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 170L
             interpolator = DecelerateInterpolator(1.4f)
             addUpdateListener { animator ->
-                val t = animator.animatedValue as Float
-                val remain = 1f - t
-                panelGlass.edgeIntensity =
-                    baseEdgeIntensity + (fromIntensity - baseEdgeIntensity) * remain
-                panelGlass.rotationX = fromX * remain
-                panelGlass.rotationY = fromY * remain
-                panelGlass.translationZ = fromZ * remain
+                val remain = 1f - animator.animatedFraction
+                panelGlass.edgeIntensity = baseEdgeIntensity + (fromIntensity - baseEdgeIntensity) * remain
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     if (edgeAnimator === this@apply) {
                         panelGlass.edgeIntensity = baseEdgeIntensity
-                        panelGlass.rotationX = 0f
-                        panelGlass.rotationY = 0f
-                        panelGlass.translationZ = 0f
                         edgeAnimator = null
                     }
                 }
