@@ -14,6 +14,16 @@ class Prefs private constructor(context: Context) {
                 .putBoolean(KEY_REFRACTION_MIGRATED, true)
                 .apply()
         }
+        // Modos Visão/Captura foram removidos: só resta o blur nativo da janela.
+        if (!sp.contains(KEY_NATIVE_BLUR_MIGRATED)) {
+            val old = sp.getInt(KEY_BLUR_MODE, 0)
+            sp.edit()
+                .putBoolean(KEY_NATIVE_BLUR_PANEL, old != 2 && old != 3)
+                .putBoolean(KEY_NATIVE_BLUR_BALL, false)
+                .putBoolean(KEY_NATIVE_BLUR_MIGRATED, true)
+                .remove(KEY_BLUR_MODE)
+                .apply()
+        }
     }
 
     var ballSizeDp: Int
@@ -32,13 +42,15 @@ class Prefs private constructor(context: Context) {
         get() = sp.getFloat(KEY_REFRACTION, DEFAULT_REFRACTION)
         set(value) = sp.edit().putFloat(KEY_REFRACTION, value.coerceIn(0f, 0.3f)).apply()
 
-    /**
-     * 0 = nativo com fallback fosco; 1 = só nativo; 2 = só fosco (barato);
-     * 3 = captura única do fundo, reduzida e desfocada no painel.
-     */
-    var blurMode: Int
-        get() = sp.getInt(KEY_BLUR_MODE, BLUR_MODE_AUTO)
-        set(value) = sp.edit().putInt(KEY_BLUR_MODE, value.coerceIn(0, 3)).apply()
+    /** Desfoque nativo da janela do painel (sem captura e sem fallback fosco). */
+    var nativeBlurPanel: Boolean
+        get() = sp.getBoolean(KEY_NATIVE_BLUR_PANEL, true)
+        set(value) = sp.edit().putBoolean(KEY_NATIVE_BLUR_PANEL, value).apply()
+
+    /** Aplica o mesmo blur nativo também à janela da bolinha. */
+    var nativeBlurBall: Boolean
+        get() = sp.getBoolean(KEY_NATIVE_BLUR_BALL, false)
+        set(value) = sp.edit().putBoolean(KEY_NATIVE_BLUR_BALL, value).apply()
 
     var volumeStepPx: Int
         get() = sp.getInt(KEY_VOLUME_STEP, 34)
@@ -140,6 +152,9 @@ class Prefs private constructor(context: Context) {
             .putFloat(KEY_REFRACTION, DEFAULT_REFRACTION)
             .putBoolean(KEY_REFRACTION_MIGRATED, true)
             .remove(KEY_BLUR_MODE)
+            .remove(KEY_NATIVE_BLUR_PANEL)
+            .remove(KEY_NATIVE_BLUR_BALL)
+            .putBoolean(KEY_NATIVE_BLUR_MIGRATED, true)
             .remove(KEY_VOLUME_STEP)
             .remove(KEY_PANEL_SIZE)
             .remove(KEY_TILE_SIZE)
@@ -156,11 +171,6 @@ class Prefs private constructor(context: Context) {
     }
 
     companion object {
-        const val BLUR_MODE_AUTO = 0
-        const val BLUR_MODE_NATIVE = 1
-        const val BLUR_MODE_VISUAL = 2
-        const val BLUR_MODE_CAPTURE = 3
-
         private const val DEFAULT_REFRACTION = 0.05f
 
         private const val KEY_BALL_SIZE = "ball_size_dp"
@@ -169,6 +179,9 @@ class Prefs private constructor(context: Context) {
         private const val KEY_REFRACTION = "refraction"
         private const val KEY_REFRACTION_MIGRATED = "refraction_migrated_05"
         private const val KEY_BLUR_MODE = "blur_mode"
+        private const val KEY_NATIVE_BLUR_PANEL = "native_blur_panel"
+        private const val KEY_NATIVE_BLUR_BALL = "native_blur_ball"
+        private const val KEY_NATIVE_BLUR_MIGRATED = "native_blur_v2"
         private const val KEY_VOLUME_STEP = "volume_step_px"
         private const val KEY_PANEL_SIZE = "panel_size_dp"
         private const val KEY_TILE_SIZE = "tile_size_dp"

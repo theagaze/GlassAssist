@@ -59,17 +59,28 @@ class PanelGlassView @JvmOverloads constructor(
         }
 
     /**
-     * Vidro fosco leve usado quando o blur nativo do sistema não está disponível
-     * (ou quando o usuário escolhe manualmente o modo visual). Não captura a tela:
-     * só um véu translúcido bem discreto, compatível com a animação do painel.
+     * Durante o morph o pipeline da lib é caro e derruba os quadros. Desenhamos
+     * apenas a forma arredondada; no fim voltamos ao vidro completo sem "consertar"
+     * nada, porque o canto final já está assentado.
      */
-    var frostStrength: Float = 0f
+    var morphShapeOnly: Boolean = false
         set(value) {
-            field = value.coerceIn(0f, 1f)
+            if (field == value) return
+            field = value
             invalidate()
         }
 
     private val clipPath = Path()
+    private val contentClipPath = Path()
+    private val morphFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(30, 226, 242, 252)
+        style = Paint.Style.FILL
+    }
+    private val morphStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(96, 235, 245, 255)
+        style = Paint.Style.STROKE
+        strokeWidth = 1.4f
+    }
     private val darkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
         style = Paint.Style.FILL
@@ -84,8 +95,6 @@ class PanelGlassView @JvmOverloads constructor(
         color = Color.argb(120, 255, 255, 255)
     }
     private val fringePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
-    private val frostPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private var frostGradient: android.graphics.LinearGradient? = null
     private val glowPath = Path()
     private val glowRect = RectF()
 
@@ -97,32 +106,43 @@ class PanelGlassView @JvmOverloads constructor(
             edgeTouchX = w / 2f
             edgeTouchY = h / 2f
         }
-        if (w > 0 && h > 0) {
-            frostGradient = android.graphics.LinearGradient(
-                0f, 0f, 0f, h.toFloat(),
-                intArrayOf(
-                    Color.argb(26, 226, 242, 252),
-                    Color.argb(6, 208, 226, 240),
-                    Color.argb(16, 218, 235, 248)
-                ),
-                floatArrayOf(0f, 0.52f, 1f),
-                Shader.TileMode.CLAMP
-            )
-            frostPaint.shader = frostGradient
-        }
+        morphStroke.strokeWidth = dp(1.2f)
     }
 
     override fun onDraw(canvas: Canvas) {
-        // Vidro primeiro; o véu escuro e o fosco por cima, para não serem diluídos.
+        if (morphShapeOnly) {
+            drawMorphShape(canvas)
+            return
+        }
         super.onDraw(canvas)
         drawDarkness(canvas)
-        drawFrost(canvas)
     }
 
     override fun dispatchDraw(canvas: Canvas) {
-        // Brilho da borda abaixo dos botões, para não tingir os ícones.
-        drawEdgeGlow(canvas)
+        // Brilho da borda abaixo dos botões, sem recorte.
+        if (!morphShapeOnly) drawEdgeGlow(canvas)
+        val save = canvas.save()
+        // Recorta os filhos pela mesma borda arredondada: as páginas entram pela
+        // curva do vidro, nunca por um retângulo solto.
+        contentClipPath.reset()
+        val r = cornerRadius.coerceAtMost(min(width, height) / 2f)
+        contentClipPath.addRoundRect(
+            0f, 0f, width.toFloat(), height.toFloat(), r, r, Path.Direction.CW
+        )
+        canvas.clipPath(contentClipPath)
         super.dispatchDraw(canvas)
+        canvas.restoreToCount(save)
+    }
+
+    private fun drawMorphShape(canvas: Canvas) {
+        if (width <= 0 || height <= 0) return
+        val r = cornerRadius.coerceAtMost(min(width, height) / 2f)
+        clipPath.reset()
+        clipPath.addRoundRect(
+            0f, 0f, width.toFloat(), height.toFloat(), r, r, Path.Direction.CW
+        )
+        canvas.drawPath(clipPath, morphFill)
+        canvas.drawPath(clipPath, morphStroke)
     }
 
     /** Escurece ao vivo o que está atrás da janela — sem print e sem recorte. */
@@ -135,17 +155,6 @@ class PanelGlassView @JvmOverloads constructor(
         )
         darkPaint.alpha = (darkness * 255f).toInt().coerceIn(0, 204)
         canvas.drawPath(clipPath, darkPaint)
-    }
-
-    private fun drawFrost(canvas: Canvas) {
-        if (frostStrength <= 0.001f || width <= 0 || height <= 0) return
-        val r = cornerRadius.coerceAtMost(min(width, height) / 2f)
-        clipPath.reset()
-        clipPath.addRoundRect(
-            0f, 0f, width.toFloat(), height.toFloat(), r, r, Path.Direction.CW
-        )
-        frostPaint.alpha = (frostStrength * 235f).toInt().coerceIn(0, 235)
-        canvas.drawPath(clipPath, frostPaint)
     }
 
     private fun drawEdgeGlow(canvas: Canvas) {

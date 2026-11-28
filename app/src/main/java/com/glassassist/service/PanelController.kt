@@ -68,7 +68,6 @@ class PanelController(
     private var dragDirection = 0
     private var dragNeighbor: ViewGroup? = null
     private var suppressClickUntil = 0L
-    private var captureBitmap: Bitmap? = null
     private val repeatRunnables = mutableSetOf<Runnable>()
     private val holdAnimators = mutableMapOf<View, ValueAnimator>()
     private var edgeAnimator: ValueAnimator? = null
@@ -91,18 +90,6 @@ class PanelController(
         Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.TRANSPARENT) }
     } catch (_: Throwable) {
         Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
-    }
-
-    /** Troca o único backdrop capturado; chamado na abertura do painel. */
-    fun setCaptureBitmap(bitmap: Bitmap?) {
-        if (disposed) {
-            bitmap?.recycle()
-            return
-        }
-        val old = captureBitmap
-        captureBitmap = bitmap
-        if (old !== bitmap && old != null && !old.isRecycled) old.recycle()
-        panelGlass.invalidate()
     }
 
     private fun dp(value: Int): Int = (value * service.resources.displayMetrics.density).toInt()
@@ -186,29 +173,11 @@ class PanelController(
             setGlassTint(Color.rgb(10, 16, 24), 0.10f)
             collectFrameStats = false
         }
-        // O modo Captura usa um único bitmap recortado/reduzido, desfocado pela
-        // própria lib. A cada desenho devolvemos uma cópia, porque a lib recicla
-        // o bitmap que recebe do capturador.
-        when (prefs.blurMode) {
-            Prefs.BLUR_MODE_CAPTURE -> {
-                panelGlass.setCustomBackdropCapture { _ ->
-                    captureBitmap?.takeUnless { it.isRecycled }
-                        ?.copy(Bitmap.Config.ARGB_8888, false)
-                        ?: safeTinyBitmap()
-                }
-                panelGlass.enableBackdropBlur = true
-                panelGlass.highQualityBlur = false
-                panelGlass.downsampleScale = 2
-                panelGlass.globalDownsampleFactor = 1f
-                panelGlass.blurAmount =
-                    (0.02f + prefs.blurRadius.coerceIn(0, 100) / 100f * 0.14f)
-            }
-            else -> {
-                panelGlass.setCustomBackdropCapture { _ -> safeTinyBitmap() }
-                panelGlass.enableBackdropBlur = false
-                panelGlass.blurAmount = 0f
-            }
-        }
+        // Nenhuma captura e nenhum blur interno: o desfoque é só da janela (flag
+        // do WindowManager), controlado pelo serviço.
+        panelGlass.setCustomBackdropCapture { _ -> safeTinyBitmap() }
+        panelGlass.enableBackdropBlur = false
+        panelGlass.blurAmount = 0f
 
         ballGlass.post {
             if (!disposed) {
@@ -681,7 +650,6 @@ class PanelController(
     }
 
     fun dispose() {
-        setCaptureBitmap(null)
         disposed = true
         cancelTileRepeats()
         edgeAnimator?.cancel()

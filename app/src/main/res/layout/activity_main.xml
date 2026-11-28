@@ -184,7 +184,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="Desfoque do painel: 40"
+                android:text="Intensidade do desfoque nativo: 40"
                 android:textColor="#FFE2E8F0" />
             <SeekBar
                 android:id="@+id/seekBlur"
@@ -197,57 +197,30 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:text="Como aplicar o desfoque"
+                android:text="Desfoque nativo"
                 android:textColor="#FF93A4B8"
                 android:textSize="12sp" />
 
-            <RadioGroup
-                android:id="@+id/rgBlurMode"
+            <CheckBox
+                android:id="@+id/cbBlurPanel"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal">
+                android:text="Aplicar no painel"
+                android:textColor="#FFE2E8F0"
+                android:textSize="13sp" />
 
-                <RadioButton
-                    android:id="@+id/rbBlurAuto"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Auto"
-                    android:textColor="#FFE2E8F0"
-                    android:textSize="12sp" />
-
-                <RadioButton
-                    android:id="@+id/rbBlurNative"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Nativo"
-                    android:textColor="#FFE2E8F0"
-                    android:textSize="12sp" />
-
-                <RadioButton
-                    android:id="@+id/rbBlurVisual"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Visual"
-                    android:textColor="#FFE2E8F0"
-                    android:textSize="12sp" />
-
-                <RadioButton
-                    android:id="@+id/rbBlurCapture"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Captura"
-                    android:textColor="#FFE2E8F0"
-                    android:textSize="10sp" />
-            </RadioGroup>
+            <CheckBox
+                android:id="@+id/cbBlurBall"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Aplicar também na bolinha"
+                android:textColor="#FFE2E8F0"
+                android:textSize="13sp" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Auto: nativo com fallback. Visual: fosco leve e barato. Captura: uma foto do fundo por abertura, reduzida e desfocada — realista sem capturar toda hora."
+                android:text="Sem captura de tela e sem vidro fosco: apenas o blur nativo do sistema quando ele estiver disponível."
                 android:textColor="#FF93A4B8"
                 android:textSize="11sp" />
 
